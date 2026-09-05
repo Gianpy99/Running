@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -17,6 +18,11 @@ from .persistence import open_store
 from .services.pipeline import process_raw_directory, process_tcx_file
 from .training.dsl import standard_treadmill_session
 from .training.replay import replay_workout
+
+
+def _mask_dsn(dsn: str) -> str:
+    """Hide the password in a postgresql:// DSN for safe logging."""
+    return re.sub(r"(://[^:]+:)[^@]+@", r"\1***@", dsn)
 
 
 def _cmd_import(args: argparse.Namespace) -> int:
@@ -43,7 +49,7 @@ def _cmd_import(args: argparse.Namespace) -> int:
         for q in report["quarantined"]:
             print(f"  - {q['file']}: {q['reason']}")
     print(f"Report written to {args.report}")
-    print(f"Database: {args.db}")
+    print(f"Database: {_mask_dsn(args.db)}")
     return 0
 
 

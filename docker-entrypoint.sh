@@ -7,6 +7,8 @@
 set -e
 
 DB_TARGET="${DATABASE_URL:-${COACH_DB:-data/coach.db}}"
+# Masked form for logging (hide any password in a postgresql:// DSN).
+DB_DISPLAY=$(printf '%s' "$DB_TARGET" | sed -E 's#(://[^:]+:)[^@]+@#\1***@#')
 
 if [ "${COACH_AUTO_SEED:-1}" != "0" ]; then
     NEEDS_SEED=$(python - <<'PY'
@@ -21,7 +23,7 @@ except Exception:
 PY
 )
     if [ "$NEEDS_SEED" = "1" ]; then
-        echo "[entrypoint] Seeding regression fixtures into ${DB_TARGET} ..."
+        echo "[entrypoint] Seeding regression fixtures into ${DB_DISPLAY} ..."
         python -m app.cli import --raw data/regression --db "$DB_TARGET" \
             --report data/processed/data_quality.json \
             || echo "[entrypoint] Seed failed (continuing without seed data)."
