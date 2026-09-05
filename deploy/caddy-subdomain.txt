@@ -1,0 +1,7 @@
+# Subdomain route for AI Running Coach — add to FamilyPortal/reverse-proxy/Caddyfile.
+# `app_auth` puts the app behind the family basic-auth (bcrypt) login, like garage/trading.
+# Place this next to the other `http://<name>.borrellofamily.co.uk { ... }` blocks.
+
+http://running.borrellofamily.co.uk {
+	import app_auth 8094
+}

@@ -1,0 +1,8 @@
+# Runtime dependencies for the container image (mirrors pyproject.toml).
+# The app package itself is added to PYTHONPATH in the Dockerfile (no install step).
+fastapi>=0.111
+uvicorn>=0.30
+pydantic>=2.7
+xlrd>=2.0.1
+python-multipart>=0.0.9
+psycopg[binary]>=3.1

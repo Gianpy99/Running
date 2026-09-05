@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Running Coach — Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1720; --panel: #17212b; --panel2: #1e2b38; --line: #293a49;
+    --text: #e6edf3; --muted: #8ba0b3; --accent: #3fb6ff; --green: #35c46b;
+    --amber: #f2b134; --red: #ef5350; --purple: #b07cff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+         background: var(--bg); color: var(--text); }
+  header { padding: 1.1rem 1.5rem; border-bottom: 1px solid var(--line);
+           display: flex; align-items: baseline; gap: .8rem; flex-wrap: wrap; }
+  header h1 { font-size: 1.25rem; margin: 0; }
+  header .sub { color: var(--muted); font-size: .85rem; }
+  header .spacer { flex: 1; }
+  header a { color: var(--accent); text-decoration: none; font-size: .85rem; }
+  main { padding: 1.2rem 1.5rem 3rem; max-width: 1280px; margin: 0 auto; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+           gap: .9rem; margin-bottom: 1.4rem; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+          padding: 1rem 1.1rem; }
+  .card .label { color: var(--muted); font-size: .78rem; text-transform: uppercase;
+                 letter-spacing: .04em; }
+  .card .value { font-size: 1.8rem; font-weight: 650; margin-top: .3rem; }
+  .card .unit { font-size: .9rem; color: var(--muted); font-weight: 400; }
+  .pill { display: inline-block; padding: .15rem .6rem; border-radius: 999px;
+          font-size: .8rem; font-weight: 600; }
+  .pill.green { background: rgba(53,196,107,.18); color: var(--green); }
+  .pill.amber { background: rgba(242,177,52,.18); color: var(--amber); }
+  .pill.red { background: rgba(239,83,80,.18); color: var(--red); }
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.1rem; }
+  @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+           padding: 1rem 1.1rem; }
+  .panel h2 { font-size: .95rem; margin: 0 0 .2rem; }
+  .panel .hint { color: var(--muted); font-size: .78rem; margin: 0 0 .8rem; }
+  .panel.wide { grid-column: 1 / -1; }
+  canvas { max-height: 300px; }
+  table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; position: sticky; top: 0; background: var(--panel); }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover { background: var(--panel2); }
+  .type { font-size: .72rem; padding: .1rem .5rem; border-radius: 6px; background: var(--panel2);
+          color: var(--muted); }
+  .warn { color: var(--amber); }
+  .reasons { margin: .4rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: .82rem; }
+  /* modal */
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none;
+             align-items: center; justify-content: center; padding: 1rem; z-index: 20; }
+  .overlay.open { display: flex; }
+  .modal { background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+           width: min(920px, 100%); max-height: 90vh; overflow: auto; padding: 1.2rem 1.4rem; }
+  .modal h3 { margin: 0 0 .2rem; }
+  .modal .close { float: right; cursor: pointer; color: var(--muted); font-size: 1.3rem;
+                  line-height: 1; border: none; background: none; }
+  .modal .narrative { background: var(--panel2); border-radius: 8px; padding: .8rem 1rem;
+                      color: var(--text); font-size: .9rem; margin: .8rem 0; }
+  .loading { color: var(--muted); padding: 2rem; text-align: center; }
+  .upload-btn { background: var(--accent); color: #08151f; border: none; border-radius: 8px;
+                padding: .45rem .8rem; font-size: .82rem; font-weight: 600; cursor: pointer; }
+  .upload-btn:hover { filter: brightness(1.08); }
+  .upload-btn:disabled { opacity: .6; cursor: default; }
+  .upload-status { font-size: .8rem; color: var(--muted); }
+  .upload-status.ok { color: var(--green); }
+  .upload-status.err { color: var(--red); }
+</style>
+</head>
+<body>
+<header>
+  <h1>AI Running Coach</h1>
+  <span class="sub">progress dashboard</span>
+  <span class="spacer"></span>
+  <button id="uploadBtn" class="upload-btn">＋ Upload run (.tcx)</button>
+  <span id="uploadStatus" class="upload-status"></span>
+  <input id="uploadInput" type="file" accept=".tcx" multiple hidden>
+  <a href="/docs">API docs →</a>
+</header>
+<main>
+  <div id="app" class="loading">Loading your running data…</div>
+</main>
+
+<div class="overlay" id="overlay">
+  <div class="modal" id="modal"></div>
+</div>
+
+<script>
+const S_COLORS = {
+  easy: '#35c46b', recovery: '#4fd0c5', progression: '#3fb6ff', fartlek: '#b07cff',
+  interval: '#f2b134', benchmark: '#ef5350', family_fun: '#ff8fb0', incomplete: '#8ba0b3',
+  unclassified: '#5a6b7a'
+};
+const charts = {};
+
+function fmtPace(s) {
+  if (!s) return '—';
+  const m = Math.floor(s / 60), sec = Math.round(s % 60);
+  return `${m}:${sec.toString().padStart(2,'0')}`;
+}
+function fmtDate(iso) { return new Date(iso).toLocaleDateString(undefined, {month:'short', day:'numeric'}); }
+
+async function j(url) { const r = await fetch(url); if (!r.ok) throw new Error(url); return r.json(); }
+
+function card(label, value, unit='') {
+  return `<div class="card"><div class="label">${label}</div>
+    <div class="value">${value}<span class="unit"> ${unit}</span></div></div>`;
+}
+
+function lineChart(id, labels, datasets, opts={}) {
+  if (charts[id]) charts[id].destroy();
+  const ctx = document.getElementById(id);
+  charts[id] = new Chart(ctx, {
+    type: opts.type || 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true, interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { labels: { color: '#8ba0b3', boxWidth: 12 } } },
+      scales: {
+        x: { ticks: { color: '#8ba0b3', maxRotation: 0, autoSkip: true }, grid: { color: '#22303d' } },
+        y: { ticks: { color: '#8ba0b3' }, grid: { color: '#22303d' },
+             reverse: !!opts.reverseY, title: opts.yTitle ? { display: true, text: opts.yTitle, color:'#8ba0b3' } : undefined },
+        ...(opts.y1 ? { y1: { position: 'right', ticks: { color: '#8ba0b3' }, grid: { drawOnChartArea:false } } } : {})
+      }
+    }
+  });
+}
+
+function renderOverview(d) {
+  const r = d.readiness, tl = d.training_load;
+  const acwr = tl.acute_chronic_ratio;
+  const acwrWarn = acwr && (acwr > 1.3) ? ' warn' : '';
+  const cards = [
+    card('Total distance', d.totals.distance_km, 'km'),
+    card('Workouts', d.totals.workouts),
+    card('Total time', d.totals.duration_h, 'h'),
+    `<div class="card"><div class="label">Readiness today</div>
+      <div class="value"><span class="pill ${r.level}">${r.level.toUpperCase()}</span>
+      <span class="unit"> ${r.score}/100</span></div></div>`,
+    card('Load 7d', tl.load_7d),
+    `<div class="card"><div class="label">Acute:chronic</div>
+      <div class="value${acwrWarn}">${acwr ?? '—'}</div></div>`,
+    d.body ? card('Weight', d.body.latest_kg, 'kg') : '',
+    d.body ? card('Weight trend', (d.body.trend_kg>=0?'+':'') + d.body.trend_kg, 'kg') : '',
+  ].join('');
+  const reasons = r.reasons?.length ? `<ul class="reasons">${r.reasons.map(x=>`<li>${x}</li>`).join('')}</ul>` : '';
+  return `<div class="cards">${cards}</div>
+    <div class="panel wide" style="margin-bottom:1.1rem">
+      <h2>Coach readiness — ${r.recommendation}</h2>${reasons}</div>`;
+}
+
+function chartPanels() {
+  return `<div class="grid">
+    <div class="panel"><h2>Distance per session</h2><p class="hint">bars = session km, line = cumulative</p><canvas id="c_distance"></canvas></div>
+    <div class="panel"><h2>Pace trend</h2><p class="hint">avg pace per session (lower is faster)</p><canvas id="c_pace"></canvas></div>
+    <div class="panel"><h2>Training load</h2><p class="hint">per session with 3-session rolling average</p><canvas id="c_load"></canvas></div>
+    <div class="panel"><h2>Avg heart rate</h2><p class="hint">per session (suspect HR down-weighted)</p><canvas id="c_hr"></canvas></div>
+    <div class="panel"><h2>Body weight</h2><p class="hint">rolling trend from smart scale</p><canvas id="c_weight"></canvas></div>
+    <div class="panel"><h2>Session mix</h2><p class="hint">how your sessions are classified</p><canvas id="c_mix"></canvas></div>
+  </div>`;
+}
+
+function workoutsTable(w) {
+  const rows = w.slice().reverse().map(x => `
+    <tr data-id="${x.id}">
+      <td>${fmtDate(x.start_time)}</td>
+      <td><span class="type" style="color:${S_COLORS[x.session_type]||'#8ba0b3'}">${x.session_type}</span></td>
+      <td>${x.terrain.replace('_',' ')}</td>
+      <td>${x.distance_km}</td>
+      <td>${x.duration_min}</td>
+      <td>${x.avg_hr ?? '—'}</td>
+      <td>${fmtPace(x.avg_pace_s_per_km)}</td>
+      <td>${x.hr_suspect_fraction > 0.1 ? `<span class="warn">${Math.round(x.hr_suspect_fraction*100)}%</span>` : '—'}</td>
+    </tr>`).join('');
+  return `<div class="panel wide" style="margin-top:1.1rem">
+    <h2>All sessions</h2><p class="hint">click a row for splits, HR, elevation and the AI narrative</p>
+    <div style="overflow:auto; max-height:420px">
+    <table><thead><tr><th>Date</th><th>Type</th><th>Terrain</th><th>km</th><th>min</th>
+      <th>HR</th><th>Pace</th><th>HR flags</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+
+function drawCharts(d) {
+  const w = d.workouts;
+  const labels = w.map(x => fmtDate(x.start_time));
+  // distance + cumulative
+  let cum = 0; const cumSeries = w.map(x => (cum += x.distance_km, +cum.toFixed(1)));
+  lineChart('c_distance', labels, [
+    { type:'bar', label:'km', data: w.map(x=>x.distance_km), backgroundColor:'#3fb6ff88', yAxisID:'y' },
+    { type:'line', label:'cumulative km', data: cumSeries, borderColor:'#35c46b', tension:.3, yAxisID:'y1', pointRadius:0 },
+  ], { type:'bar', y1:true });
+  // pace
+  lineChart('c_pace', labels, [
+    { label:'pace (min/km)', data: w.map(x=>x.avg_pace_s_per_km? x.avg_pace_s_per_km/60 : null),
+      borderColor:'#b07cff', backgroundColor:'#b07cff33', tension:.3, spanGaps:true, pointRadius:3,
+      pointBackgroundColor: w.map(x=>x.terrain==='treadmill'?'#f2b134':'#b07cff') }
+  ], { reverseY:true, yTitle:'min/km' });
+  // load + rolling
+  const loads = w.map(x=>x.load||0);
+  const roll = loads.map((_,i)=>{ const s=loads.slice(Math.max(0,i-2),i+1); return +(s.reduce((a,b)=>a+b,0)/s.length).toFixed(1); });
+  lineChart('c_load', labels, [
+    { type:'bar', label:'load', data:loads, backgroundColor:'#f2b13488' },
+    { type:'line', label:'rolling', data:roll, borderColor:'#ef5350', tension:.3, pointRadius:0 },
+  ], { type:'bar' });
+  // hr
+  lineChart('c_hr', labels, [
+    { label:'avg HR', data: w.map(x=>x.avg_hr), borderColor:'#ef5350', backgroundColor:'#ef535033',
+      tension:.3, spanGaps:true, pointRadius:3 }
+  ], { yTitle:'bpm' });
+  // weight
+  if (d.body && d.body.series?.length) {
+    const b = d.body.series;
+    lineChart('c_weight', b.map(x=>fmtDate(x.date)), [
+      { label:'weight', data: b.map(x=>x.weight_kg), borderColor:'#8ba0b3', pointRadius:2, tension:.2 },
+      { label:'rolling', data: b.map(x=>x.rolling_kg), borderColor:'#3fb6ff', pointRadius:0, tension:.3 },
+    ], { yTitle:'kg' });
+  }
+  // mix doughnut
+  const mix = d.session_breakdown;
+  if (charts.c_mix) charts.c_mix.destroy();
+  charts.c_mix = new Chart(document.getElementById('c_mix'), {
+    type:'doughnut',
+    data:{ labels:Object.keys(mix), datasets:[{ data:Object.values(mix),
+      backgroundColor:Object.keys(mix).map(k=>S_COLORS[k]||'#5a6b7a') }] },
+    options:{ plugins:{ legend:{ position:'right', labels:{ color:'#8ba0b3', boxWidth:12 } } } }
+  });
+}
+
+async function openWorkout(id) {
+  const overlay = document.getElementById('overlay');
+  const modal = document.getElementById('modal');
+  modal.innerHTML = `<button class="close" onclick="closeModal()">×</button><div class="loading">Loading session…</div>`;
+  overlay.classList.add('open');
+  try {
+    const [streams, analysis, ai] = await Promise.all([
+      j(`/workouts/${id}/streams`), j(`/workouts/${id}/analysis`),
+      fetch(`/ai/analyse-session`, {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({workout_id:id})}).then(r=>r.json()).catch(()=>null)
+    ]);
+    const m = analysis.metrics;
+    const eq = analysis.equivalent_flat_pace;
+    modal.innerHTML = `<button class="close" onclick="closeModal()">×</button>
+      <h3>${analysis.session_type} · ${analysis.terrain.replace('_',' ')}</h3>
+      <div class="hint" style="color:var(--muted)">${new Date(analysis.start_time).toLocaleString()}</div>
+      ${ai?.output?.narrative ? `<div class="narrative">🧠 ${ai.output.narrative}</div>` : ''}
+      <div class="cards">
+        ${card('Distance', (m.distance_m/1000).toFixed(2), 'km')}
+        ${card('Moving', Math.round(m.moving_s/60), 'min')}
+        ${card('Avg pace', fmtPace(m.avg_pace_s_per_km), '/km')}
+        ${card('Avg HR', m.avg_hr ?? '—', 'bpm')}
+        ${card('Elev gain', analysis.elevation.elevation_gain_m ?? '—', 'm')}
+        ${eq.available ? card('Flat-equiv pace', fmtPace(eq.equivalent_flat_pace_s_per_km), '/km') : ''}
+      </div>
+      <div class="panel" style="margin-top:.8rem"><h2>Pace &amp; heart rate</h2><canvas id="c_detail"></canvas></div>
+      ${streams.altitude_m.some(a=>a!=null) ? `<div class="panel" style="margin-top:.8rem"><h2>Elevation</h2><canvas id="c_elev"></canvas></div>` : ''}`;
+    const xs = streams.elapsed_s.map(s => (s/60).toFixed(0));
+    lineChart('c_detail', xs, [
+      { label:'pace (min/km)', data: streams.pace_s_per_km.map(p=>p?p/60:null), borderColor:'#b07cff',
+        spanGaps:true, pointRadius:0, tension:.2, yAxisID:'y' },
+      { label:'HR', data: streams.hr_bpm, borderColor:'#ef5350', spanGaps:true, pointRadius:0, tension:.2, yAxisID:'y1' },
+    ], { reverseY:true, y1:true });
+    if (streams.altitude_m.some(a=>a!=null)) {
+      lineChart('c_elev', xs, [
+        { label:'altitude (m)', data: streams.altitude_m, borderColor:'#35c46b',
+          backgroundColor:'#35c46b33', fill:true, spanGaps:true, pointRadius:0, tension:.3 }
+      ]);
+    }
+  } catch (e) {
+    modal.innerHTML = `<button class="close" onclick="closeModal()">×</button><p>Could not load session.</p>`;
+  }
+}
+function closeModal() { document.getElementById('overlay').classList.remove('open'); }
+document.getElementById('overlay').addEventListener('click', e => { if (e.target.id==='overlay') closeModal(); });
+
+function setUploadStatus(msg, cls='') {
+  const el = document.getElementById('uploadStatus');
+  el.textContent = msg;
+  el.className = 'upload-status' + (cls ? ' ' + cls : '');
+}
+
+async function uploadFiles(files) {
+  const btn = document.getElementById('uploadBtn');
+  btn.disabled = true;
+  let added = 0, skipped = 0, failed = 0;
+  for (const file of files) {
+    setUploadStatus(`Uploading ${file.name}…`);
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const r = await fetch('/workouts/upload', { method: 'POST', body: fd });
+      if (!r.ok) { failed++; continue; }
+      const res = await r.json();
+      res.already_existed ? skipped++ : added++;
+    } catch (e) { failed++; }
+  }
+  btn.disabled = false;
+  const parts = [];
+  if (added) parts.push(`${added} added`);
+  if (skipped) parts.push(`${skipped} already present`);
+  if (failed) parts.push(`${failed} failed`);
+  setUploadStatus(parts.join(', ') || 'Nothing to import', failed ? 'err' : 'ok');
+  if (added) await init();
+}
+
+document.getElementById('uploadBtn').addEventListener('click', () =>
+  document.getElementById('uploadInput').click());
+document.getElementById('uploadInput').addEventListener('change', e => {
+  if (e.target.files.length) uploadFiles([...e.target.files]);
+  e.target.value = '';
+});
+
+async function init() {
+  const app = document.getElementById('app');
+  try {
+    const d = await j('/summary');
+    if (!d.totals.workouts) {
+      app.innerHTML = `<div class="panel"><h2>No data yet</h2>
+        <p class="hint">Import your files first:</p>
+        <pre>running-coach import --raw .. --db data/coach.db</pre></div>`;
+      return;
+    }
+    app.classList.remove('loading');
+    app.innerHTML = renderOverview(d) + chartPanels() + workoutsTable(d.workouts);
+    drawCharts(d);
+    document.querySelectorAll('tbody tr').forEach(tr =>
+      tr.addEventListener('click', () => openWorkout(tr.dataset.id)));
+  } catch (e) {
+    app.innerHTML = `<div class="panel"><h2>Could not reach the API</h2>
+      <p class="hint">Is the server running? ${e}</p></div>`;
+  }
+}
+init();
+</script>
+</body>
+</html>

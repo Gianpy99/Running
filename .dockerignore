@@ -1,0 +1,18 @@
+# Keep the image small and builds reproducible.
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.git/
+.gitignore
+deletemme/
+Running.zip
+dashboard/
+wearos/
+docs/
+tests/
+MIGRATION.md
+# Local databases / generated reports (the container seeds its own).
+data/*.db
+data/processed/*.json

@@ -1,0 +1,21 @@
+version: "3.9"
+# Local / manual run of the AI Running Coach server.
+# In the Family Portal the app is deployed by Jenkins (docker build + docker run),
+# not compose — this file is for local development and testing only.
+services:
+  running-coach:
+    build: .
+    image: ai-running-coach:latest
+    container_name: ai-running-coach
+    ports:
+      - "8094:8090"
+    env_file:
+      - .env
+    environment:
+      COACH_AUTO_SEED: "1"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8090/health',timeout=8).status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5

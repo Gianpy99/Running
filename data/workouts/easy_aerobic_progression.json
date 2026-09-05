@@ -1,0 +1,13 @@
+{
+  "name": "Easy Aerobic Progression",
+  "phases": [
+    {"type": "warmup", "duration_min": 10, "speed_mph": 4.0, "incline_pct": 1},
+    {"type": "aerobic", "duration_min": 25, "speed_mph": 4.7, "incline_pct": 1, "hr_target": [135, 150],
+     "adaptive_rules": [
+       {"when": "hr_above_target", "action": "reduce", "detail": "Ease back slightly"},
+       {"when": "hr_below_target", "action": "extend", "detail": "Room to add a little"}
+     ]},
+    {"type": "progression", "duration_min": 5, "speed_mph": 5.0, "incline_pct": 1},
+    {"type": "cooldown", "duration_min": 5}
+  ]
+}
