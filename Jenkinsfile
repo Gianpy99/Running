@@ -1,8 +1,8 @@
 // AI Running Coach — Family Portal deploy pipeline (mirrors MyGarage/AudibleConverter).
 // Jenkins runs on the Raspberry Pi, polls GitHub every ~3 min, then builds and
 // (re)deploys the container. The container listens on 8090 internally; this app
-// is published on host port 8094. The DATABASE_URL secret points at the shared
-// PostgreSQL (192.168.1.129:1433) and is injected from Jenkins credentials.
+// is published on host port 8095. The DATABASE_URL secret points at the shared
+// PostgreSQL (192.168.1.129:5432) and is injected from Jenkins credentials.
 pipeline {
     agent any
     options { disableConcurrentBuilds() }
@@ -11,7 +11,7 @@ pipeline {
     environment {
         IMAGE     = 'ai-running-coach:latest'
         CONTAINER = 'ai-running-coach'
-        HOST_PORT = '8094'
+        HOST_PORT = '8095'
     }
 
     stages {
@@ -41,14 +41,14 @@ pipeline {
                 sh '''
                     sleep 8
                     docker exec $CONTAINER python -c "import urllib.request,sys; r=urllib.request.urlopen('http://localhost:8090/health', timeout=8); sys.exit(0 if r.status==200 else 1)"
-                    echo "AI Running Coach OK su http://192.168.1.129:8094/"
+                    echo "AI Running Coach OK su http://192.168.1.129:8095/"
                 '''
             }
         }
     }
 
     post {
-        success { echo 'Deploy AI Running Coach completato. UI: http://192.168.1.129:8094/' }
+        success { echo 'Deploy AI Running Coach completato. UI: http://192.168.1.129:8095/' }
         failure { echo 'Deploy AI Running Coach FALLITO. Log: docker logs ai-running-coach' }
     }
 }

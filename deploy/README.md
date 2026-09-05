@@ -8,7 +8,7 @@ running on the Pi. Jenkins polls GitHub every ~3 min and rebuilds on new commits
 |---|---|
 | Repo | `github.com/Gianpy99/Running.git` (branch `main`) |
 | Container port (internal) | `8090` |
-| Host port (Pi) | `8094` |
+| Host port (Pi) | `8095` |
 | Public URL | `http://running.borrellofamily.co.uk` (family basic-auth) |
 | Database | native PostgreSQL 15 on the Pi, `192.168.1.129:5432`, DB `running_coach` |
 | Jenkins job | `ai-running-coach` |
@@ -69,7 +69,7 @@ docker restart ci_cd_validation_jenkins_1
 Both groovy scripts are idempotent and self-delete after running. The first build
 starts automatically; thereafter `pollSCM` picks up new commits.
 
-Verify on the Pi: `docker logs -f ai-running-coach` and `curl http://192.168.1.129:8094/health`.
+Verify on the Pi: `docker logs -f ai-running-coach` and `curl http://192.168.1.129:8095/health`.
 
 ## 4. Register the app in the portal dashboard + reverse proxy
 
@@ -79,7 +79,7 @@ From the FamilyPortal repo (adds the tile in `services.json` and the LAN path ro
 C:\Development\FamilyPortal\register-app.ps1 `
     -Id "running" -Name "AI Running Coach" `
     -Description "Deterministic running analytics & readiness" `
-    -Category "Health & Fitness" -Icon "🏃" -Color "#22c55e" -Port 8094
+    -Category "Health & Fitness" -Icon "🏃" -Color "#22c55e" -Port 8095
 ```
 
 Then add the **subdomain + basic-auth** route: paste the block from
@@ -104,7 +104,7 @@ cloudflared tunnel route dns family-portal running.borrellofamily.co.uk
 
 ## 6. Verify
 
-- LAN: `http://192.168.1.129:8094/` (dashboard) and `/health` → `{"status":"ok"}`
+- LAN: `http://192.168.1.129:8095/` (dashboard) and `/health` → `{"status":"ok"}`
 - Public: `http://running.borrellofamily.co.uk` (behind family login)
 - Data: `GET /workouts` should list the seeded regression runs.
 

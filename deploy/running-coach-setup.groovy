@@ -11,7 +11,7 @@ import jenkins.model.*
 def jobName = 'ai-running-coach'
 def xml = '''<?xml version='1.1' encoding='UTF-8'?>
 <flow-definition plugin="workflow-job">
-  <description>AI Running Coach - build &amp; deploy container (FastAPI/uvicorn on 8094)</description>
+  <description>AI Running Coach - build &amp; deploy container (FastAPI/uvicorn on 8095)</description>
   <keepDependencies>false</keepDependencies>
   <properties/>
   <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">

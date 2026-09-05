@@ -1,6 +1,6 @@
 # AI Running Coach — production image for the Family Portal (Raspberry Pi).
 # Follows the FamilyPortal hosting standard: the container ALWAYS listens on 8090
-# internally; the host port is chosen by the Jenkins pipeline (8094 for this app).
+# internally; the host port is chosen by the Jenkins pipeline (8095 for this app).
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \

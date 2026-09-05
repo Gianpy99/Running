@@ -8,7 +8,7 @@ services:
     image: ai-running-coach:latest
     container_name: ai-running-coach
     ports:
-      - "8094:8090"
+      - "8095:8090"
     env_file:
       - .env
     environment:
