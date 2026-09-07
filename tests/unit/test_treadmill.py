@@ -115,3 +115,81 @@ def test_api_rejects_bad_description(tmp_path):
     client = TestClient(create_app(str(tmp_path / "t.db")))
     resp = client.post("/workouts/treadmill", json={"description": "no phases here"})
     assert resp.status_code == 422
+
+
+def test_manual_session_not_flagged_suspect():
+    from app.analytics.quality import annotate_hr_quality
+
+    workout = build_treadmill_workout("30 min at 5mph", avg_hr=140)
+    result = annotate_hr_quality(workout)
+    # A self-reported session has no sensor stream, so nothing is flagged as suspect.
+    assert result.suspect_fraction == 0.0
+
+
+def test_edit_manual_preserves_reported_hr(tmp_path):
+    client = TestClient(create_app(str(tmp_path / "t.db")))
+    created = client.post(
+        "/workouts/treadmill",
+        json={"description": "20 min at 5mph", "start_time": "2026-06-01T07:00:00", "avg_hr": 135},
+    ).json()
+    wid = created["workout_id"]
+    # Re-saving without an HR must not wipe the previously reported HR.
+    edited = client.post(
+        "/workouts/treadmill",
+        json={"description": "25 min at 5mph", "workout_id": wid},
+    ).json()
+    assert edited["mode"] == "synthetic"
+    assert edited["avg_hr"] == 135
+
+
+def test_edit_device_recorded_preserves_measurements(tmp_path):
+    from datetime import timedelta
+
+    from app.analytics.analysis import analyse_workout
+    from app.analytics.terrain import infer_terrain
+    from app.models import Athlete, Trackpoint, Workout
+    from app.persistence import Store
+
+    db = tmp_path / "t.db"
+    start = datetime(2026, 5, 1, 6, 0, tzinfo=timezone.utc)
+    pts = [
+        Trackpoint(
+            timestamp=start + timedelta(seconds=i * 10),
+            elapsed_s=i * 10,
+            distance_m=i * 30,
+            speed_mps=3.0,
+            hr_bpm=120 + (i % 20),
+        )
+        for i in range(60)
+    ]
+    watch = Workout(
+        id=start.strftime("%Y%m%dT%H%M%S"),
+        source="tcx",
+        source_file="run.tcx",
+        start_time=start,
+        duration_s=600,
+        distance_m=1800,
+        trackpoints=pts,
+    )
+    watch.terrain = infer_terrain(watch)
+    analysis = analyse_workout(watch, Athlete())
+    with Store(db) as s:
+        s.upsert_workout(watch, analysis)
+    measured_hr = watch.avg_hr
+    assert measured_hr is not None
+
+    client = TestClient(create_app(str(db)))
+    resp = client.post(
+        "/workouts/treadmill",
+        json={"description": "10 min at 4mph\n5 min cooldown", "workout_id": watch.id},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["mode"] == "annotated"
+    assert body["avg_hr"] == measured_hr  # measured HR untouched
+
+    detail = client.get(f"/workouts/{watch.id}").json()
+    assert detail["source"] == "tcx"  # still a device recording
+    assert detail["notes"] == "10 min at 4mph\n5 min cooldown"
+    assert len(detail["trackpoints"]) == 60  # measured stream intact
+

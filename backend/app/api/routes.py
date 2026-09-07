@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from ..ai import explain_session, recommend_next_session
 from ..analytics.analysis import analyse_workout
 from ..analytics.terrain import infer_terrain
-from ..ingestion import build_treadmill_workout, parse_tcx
+from ..ingestion import build_treadmill_workout, parse_tcx, parse_treadmill_log
 from ..models import Athlete, RecoveryContext
 from ..persistence import open_store
 from ..persistence.store import _BaseStore
@@ -176,17 +176,60 @@ def create_app(db_path: str | None = None) -> FastAPI:
         No GPS is recorded, so the athlete describes the session one phase per line, e.g.
         "25 min at 4.7mph with 1%". The text is parsed into structured phases and persisted
         as a treadmill workout. Pass ``workout_id`` to overwrite an earlier session.
+
+        Editing a session that was recorded by a device (a TCX upload) never regenerates the
+        time-series: the measured trackpoints, heart rate and distance are preserved and the
+        description is only stored as a note.
         """
-        start_time = payload.start_time
-        if payload.workout_id and start_time is None:
+        existing = None
+        if payload.workout_id:
             with store() as s:
-                prior = s.get_workout(payload.workout_id)
-            if prior is None:
+                existing = s.get_workout(payload.workout_id)
+            if existing is None:
                 raise HTTPException(404, "workout not found")
-            start_time = prior.start_time
+
+        if existing is not None and existing.source != "manual_treadmill":
+            try:
+                definition = parse_treadmill_log(payload.description)
+            except ValueError as exc:
+                raise HTTPException(422, f"could not parse treadmill description: {exc}")
+            existing.notes = payload.description.strip()
+            main = max(
+                (p for p in definition.phases if p.speed_mph),
+                key=lambda p: p.duration_min or 0.0,
+                default=None,
+            )
+            if main is not None:
+                existing.treadmill_speed_mph = main.speed_mph
+                existing.treadmill_incline_pct = main.incline_pct
+            analysis = analyse_workout(existing, ATHLETE)
+            with store() as s:
+                s.upsert_workout(existing, analysis)
+            return {
+                "status": "ok",
+                "mode": "annotated",
+                "workout_id": existing.id,
+                "already_existed": True,
+                "start_time": existing.start_time.isoformat(),
+                "session_type": existing.session_type.value,
+                "terrain": existing.terrain.value,
+                "distance_km": round((existing.distance_m or 0) / 1000.0, 2),
+                "duration_min": round((existing.duration_s or 0) / 60.0, 1),
+                "avg_hr": existing.avg_hr,
+                "phases": len([ln for ln in payload.description.splitlines() if ln.strip()]),
+            }
+
+        # New session, or edit of a manually-entered one: (re)build synthetic trackpoints.
+        start_time = payload.start_time
+        avg_hr = payload.avg_hr
+        if existing is not None:
+            if start_time is None:
+                start_time = existing.start_time
+            if avg_hr is None:
+                avg_hr = existing.avg_hr  # keep the reported HR unless explicitly changed
         try:
             workout = build_treadmill_workout(
-                payload.description, start_time=start_time, avg_hr=payload.avg_hr
+                payload.description, start_time=start_time, avg_hr=avg_hr
             )
         except ValueError as exc:
             raise HTTPException(422, f"could not parse treadmill description: {exc}")
@@ -194,15 +237,16 @@ def create_app(db_path: str | None = None) -> FastAPI:
         workout.session_type = classify_session(workout)
         analysis = analyse_workout(workout, ATHLETE)
         with store() as s:
-            existing = s.get_workout(workout.id) is not None
+            already_existed = s.get_workout(workout.id) is not None
             # Retroactive edit that shifts the start time leaves a stale row behind; drop it.
             if payload.workout_id and payload.workout_id != workout.id:
                 s.delete_workout(payload.workout_id)
             s.upsert_workout(workout, analysis)
         return {
             "status": "ok",
+            "mode": "synthetic",
             "workout_id": workout.id,
-            "already_existed": existing,
+            "already_existed": already_existed,
             "start_time": workout.start_time.isoformat(),
             "session_type": workout.session_type.value,
             "terrain": workout.terrain.value,

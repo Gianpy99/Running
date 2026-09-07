@@ -327,17 +327,16 @@ function openTreadmillModal(prefill = null) {
   const example = '10 min warmup at 4mph\n25 min at 4.7mph with 1%\n5 min at 5mph with 1%\n5 min cooldown';
   const editing = !!prefill;
   _tmEditId = editing ? (prefill.workout_id || null) : null;
+  // A session recorded by the watch keeps its measured HR/pace; the text is only a note.
+  const deviceRecorded = editing && prefill.source && prefill.source !== 'manual_treadmill';
   const text = editing ? (prefill.description || '') : example;
   const startVal = editing && prefill.start_time ? toLocalInput(prefill.start_time) : '';
   const hrVal = editing && prefill.avg_hr != null ? prefill.avg_hr : '';
-  modal.innerHTML = `
-    <button class="close" onclick="closeModal()">×</button>
-    <h3>${editing ? 'Edit treadmill session' : 'Log treadmill session'}</h3>
-    <p style="color:var(--muted);font-size:.85rem;margin:.2rem 0 .6rem">
-      No GPS on the treadmill — just describe what you did, one phase per line.</p>
-    <textarea id="tmText" rows="6" placeholder="${example}"
-      style="width:100%;box-sizing:border-box;background:var(--panel2);color:var(--text);
-      border:1px solid #2a3a48;border-radius:8px;padding:.6rem;font-family:inherit;font-size:.9rem;resize:vertical">${text}</textarea>
+  const deviceNote = deviceRecorded
+    ? `<p style="color:var(--green);font-size:.82rem;margin:.2rem 0 .6rem">
+        ✔ Recorded by your watch — measured heart rate and pace are kept. Your text is saved as a note only.</p>`
+    : '';
+  const measuredFields = deviceRecorded ? '' : `
     <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin:.6rem 0">
       <label style="color:var(--muted);font-size:.82rem">Date/time
         <input id="tmStart" type="datetime-local" value="${startVal}"
@@ -345,10 +344,20 @@ function openTreadmillModal(prefill = null) {
       <label style="color:var(--muted);font-size:.82rem">Avg HR (optional)
         <input id="tmHr" type="number" min="60" max="220" placeholder="—" value="${hrVal}"
           style="display:block;width:6rem;background:var(--panel2);color:var(--text);border:1px solid #2a3a48;border-radius:6px;padding:.35rem"></label>
-    </div>
-    <div style="display:flex;align-items:center;gap:.8rem">
+    </div>`;
+  modal.innerHTML = `
+    <button class="close" onclick="closeModal()">×</button>
+    <h3>${editing ? 'Edit treadmill session' : 'Log treadmill session'}</h3>
+    <p style="color:var(--muted);font-size:.85rem;margin:.2rem 0 .6rem">
+      No GPS on the treadmill — just describe what you did, one phase per line.</p>
+    ${deviceNote}
+    <textarea id="tmText" rows="6" placeholder="${example}"
+      style="width:100%;box-sizing:border-box;background:var(--panel2);color:var(--text);
+      border:1px solid #2a3a48;border-radius:8px;padding:.6rem;font-family:inherit;font-size:.9rem;resize:vertical">${text}</textarea>
+    ${measuredFields}
+    <div style="display:flex;align-items:center;gap:.8rem;margin-top:.6rem">
       <button id="tmSave" class="upload-btn">${editing ? 'Update session' : 'Save session'}</button>
-      <span id="tmStatus" class="upload-status">${editing ? 'Editing an existing session overwrites it.' : ''}</span>
+      <span id="tmStatus" class="upload-status"></span>
     </div>`;
   document.getElementById('overlay').classList.add('open');
   document.getElementById('tmSave').addEventListener('click', saveTreadmill);
@@ -358,7 +367,8 @@ let _tmEditId = null;
 async function editTreadmill(id) {
   try {
     const w = await j(`/workouts/${id}`);
-    openTreadmillModal({ workout_id: id, description: w.notes || '', start_time: w.start_time, avg_hr: w.avg_hr });
+    openTreadmillModal({ workout_id: id, description: w.notes || '', start_time: w.start_time,
+      avg_hr: w.avg_hr, source: w.source });
   } catch (e) {
     openTreadmillModal();
   }
@@ -371,10 +381,10 @@ async function saveTreadmill() {
   if (!description) { status.textContent = 'Describe the session first'; status.className = 'upload-status err'; return; }
   const payload = { description };
   if (_tmEditId) payload.workout_id = _tmEditId;
-  const start = document.getElementById('tmStart').value;
-  if (start) payload.start_time = new Date(start).toISOString();
-  const hr = document.getElementById('tmHr').value;
-  if (hr) payload.avg_hr = parseInt(hr, 10);
+  const startEl = document.getElementById('tmStart');
+  if (startEl && startEl.value) payload.start_time = new Date(startEl.value).toISOString();
+  const hrEl = document.getElementById('tmHr');
+  if (hrEl && hrEl.value) payload.avg_hr = parseInt(hrEl.value, 10);
   btn.disabled = true;
   status.textContent = 'Saving…'; status.className = 'upload-status';
   try {

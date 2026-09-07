@@ -31,6 +31,19 @@ class HRQualityResult:
 def annotate_hr_quality(workout: Workout) -> HRQualityResult:
     """Annotate trackpoints in-place with HR quality flags and return a summary."""
     pts = workout.trackpoints
+    thresholds = {
+        "max_hr_delta_bpm_per_s": MAX_HR_DELTA_BPM_PER_S,
+        "flatline_min_samples": FLATLINE_MIN_SAMPLES,
+        "plausible_hr_range": list(PLAUSIBLE_HR_RANGE),
+    }
+
+    # Self-reported treadmill logs have no sensor stream, so signal-quality checks (which
+    # would flag the synthesized constant HR as a flatline) don't apply.
+    if workout.source == "manual_treadmill":
+        for p in pts:
+            p.quality = [QualityFlag.OK]
+        return HRQualityResult(flagged_samples=0, total_samples=len(pts), thresholds=thresholds)
+
     flagged = 0
 
     run_value: int | None = None
@@ -70,11 +83,7 @@ def annotate_hr_quality(workout: Workout) -> HRQualityResult:
     return HRQualityResult(
         flagged_samples=flagged,
         total_samples=len(pts),
-        thresholds={
-            "max_hr_delta_bpm_per_s": MAX_HR_DELTA_BPM_PER_S,
-            "flatline_min_samples": FLATLINE_MIN_SAMPLES,
-            "plausible_hr_range": list(PLAUSIBLE_HR_RANGE),
-        },
+        thresholds=thresholds,
     )
 
 
