@@ -261,11 +261,30 @@ async function openWorkout(id) {
       <div class="panel" style="margin-top:.8rem"><h2>Pace &amp; heart rate</h2><canvas id="c_detail"></canvas></div>
       ${streams.altitude_m.some(a=>a!=null) ? `<div class="panel" style="margin-top:.8rem"><h2>Elevation</h2><canvas id="c_elev"></canvas></div>` : ''}`;
     const xs = streams.elapsed_s.map(s => (s/60).toFixed(0));
-    lineChart('c_detail', xs, [
+    const paceDatasets = [
       { label:'pace (min/km)', data: streams.pace_s_per_km.map(p=>p?p/60:null), borderColor:'#b07cff',
         spanGaps:true, pointRadius:0, tension:.2, yAxisID:'y' },
       { label:'HR', data: streams.hr_bpm, borderColor:'#ef5350', spanGaps:true, pointRadius:0, tension:.2, yAxisID:'y1' },
-    ], { reverseY:true, y1:true });
+    ];
+    // Overlay the reported treadmill plan pace across the minutes you described.
+    const tm = analysis.treadmill_effort;
+    if (tm && tm.available && tm.phases && tm.phases.length) {
+      const bounds = [];
+      let acc = 0;
+      for (const ph of tm.phases) {
+        const dur = (ph.duration_min || 0) * 60;
+        const paceMin = ph.speed_mph ? (1000 / (ph.speed_mph * 0.44704)) / 60 : null;
+        bounds.push({ start: acc, end: acc + dur, paceMin });
+        acc += dur;
+      }
+      const planPace = streams.elapsed_s.map(s => {
+        const b = bounds.find(b => s >= b.start && s < b.end);
+        return b ? b.paceMin : null;
+      });
+      paceDatasets.push({ label:'plan pace (min/km)', data: planPace, borderColor:'#f2b134',
+        borderDash:[6,4], stepped:true, spanGaps:false, pointRadius:0, yAxisID:'y' });
+    }
+    lineChart('c_detail', xs, paceDatasets, { reverseY:true, y1:true });
     if (streams.altitude_m.some(a=>a!=null)) {
       lineChart('c_elev', xs, [
         { label:'altitude (m)', data: streams.altitude_m, borderColor:'#35c46b',
