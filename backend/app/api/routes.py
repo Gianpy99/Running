@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from ..ai import explain_session, recommend_next_session
 from ..analytics.analysis import analyse_workout
 from ..analytics.terrain import infer_terrain
-from ..ingestion import parse_tcx
+from ..ingestion import build_treadmill_workout, parse_tcx
 from ..models import Athlete, RecoveryContext
 from ..persistence import open_store
 from ..persistence.store import _BaseStore
@@ -52,6 +52,15 @@ class RaceIn(BaseModel):
     distance_m: float | None = None
     target_time_s: int | None = None
     verified: bool = False
+
+
+class TreadmillLogIn(BaseModel):
+    """A free-text treadmill session, one phase per line (PRD §15)."""
+
+    description: str
+    start_time: datetime | None = None
+    avg_hr: int | None = None
+    workout_id: str | None = None  # set to overwrite an existing session (retroactive edit)
 
 
 def _recent_loads(store: _BaseStore) -> tuple[float, float, bool]:
@@ -158,6 +167,49 @@ def create_app(db_path: str | None = None) -> FastAPI:
             "distance_km": round((workout.distance_m or 0) / 1000.0, 2),
             "duration_min": round((workout.duration_s or 0) / 60.0, 1),
             "avg_hr": workout.avg_hr,
+        }
+
+    @app.post("/workouts/treadmill")
+    def log_treadmill(payload: TreadmillLogIn) -> dict:
+        """Log or retroactively edit a treadmill session from a free-text description (PRD §15).
+
+        No GPS is recorded, so the athlete describes the session one phase per line, e.g.
+        "25 min at 4.7mph with 1%". The text is parsed into structured phases and persisted
+        as a treadmill workout. Pass ``workout_id`` to overwrite an earlier session.
+        """
+        start_time = payload.start_time
+        if payload.workout_id and start_time is None:
+            with store() as s:
+                prior = s.get_workout(payload.workout_id)
+            if prior is None:
+                raise HTTPException(404, "workout not found")
+            start_time = prior.start_time
+        try:
+            workout = build_treadmill_workout(
+                payload.description, start_time=start_time, avg_hr=payload.avg_hr
+            )
+        except ValueError as exc:
+            raise HTTPException(422, f"could not parse treadmill description: {exc}")
+        workout.terrain = infer_terrain(workout)
+        workout.session_type = classify_session(workout)
+        analysis = analyse_workout(workout, ATHLETE)
+        with store() as s:
+            existing = s.get_workout(workout.id) is not None
+            # Retroactive edit that shifts the start time leaves a stale row behind; drop it.
+            if payload.workout_id and payload.workout_id != workout.id:
+                s.delete_workout(payload.workout_id)
+            s.upsert_workout(workout, analysis)
+        return {
+            "status": "ok",
+            "workout_id": workout.id,
+            "already_existed": existing,
+            "start_time": workout.start_time.isoformat(),
+            "session_type": workout.session_type.value,
+            "terrain": workout.terrain.value,
+            "distance_km": round((workout.distance_m or 0) / 1000.0, 2),
+            "duration_min": round((workout.duration_s or 0) / 60.0, 1),
+            "avg_hr": workout.avg_hr,
+            "phases": len([ln for ln in payload.description.splitlines() if ln.strip()]),
         }
 
     @app.get("/workouts/{workout_id}/analysis")

@@ -160,6 +160,13 @@ class _BaseStore:
         ).fetchone()
         return json.loads(row["analysis_json"]) if row else None
 
+    def delete_workout(self, workout_id: str) -> bool:
+        """Remove a workout and its analysis. Returns True if a row was deleted."""
+        cur = self._exec("DELETE FROM workouts WHERE id = ?", (workout_id,))
+        self._exec("DELETE FROM analyses WHERE workout_id = ?", (workout_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
+
     # --- body ---
     def upsert_body_measurements(self, measurements: list[BodyMeasurement]) -> int:
         for m in measurements:
