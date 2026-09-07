@@ -193,3 +193,74 @@ def test_edit_device_recorded_preserves_measurements(tmp_path):
     assert detail["notes"] == "10 min at 4mph\n5 min cooldown"
     assert len(detail["trackpoints"]) == 60  # measured stream intact
 
+
+def test_treadmill_effort_incline_matters():
+    from app.analytics.terrain import treadmill_effort
+
+    start = datetime(2026, 7, 1, 6, 0, tzinfo=timezone.utc)
+    one_pct = treadmill_effort(build_treadmill_workout("30 min at 4.7mph with 1%", start_time=start))
+    two_pct = treadmill_effort(build_treadmill_workout("30 min at 4.7mph with 2%", start_time=start))
+    assert one_pct["available"] and two_pct["available"]
+    # Same speed, more incline -> harder -> a faster equivalent-flat pace and more added effort.
+    assert two_pct["incline_effort_pct"] > one_pct["incline_effort_pct"]
+    assert two_pct["equivalent_flat_pace_s_per_km"] < one_pct["equivalent_flat_pace_s_per_km"]
+    assert two_pct["avg_incline_pct"] == 2.0
+
+
+def test_analysis_and_narrative_include_treadmill_effort():
+    from app.ai import explain_session
+    from app.analytics.analysis import analyse_workout
+    from app.analytics.terrain import infer_terrain
+    from app.models import Athlete
+    from app.services.classification import classify_session
+
+    workout = build_treadmill_workout("25 min at 4.7mph with 1%", avg_hr=140)
+    workout.terrain = infer_terrain(workout)
+    workout.session_type = classify_session(workout)
+    analysis = analyse_workout(workout, Athlete())
+    assert analysis["treadmill_effort"]["available"]
+    narrative = explain_session(analysis)["output"]["narrative"]
+    assert "incline" in narrative.lower()
+
+
+def test_upload_replaces_near_duplicate(tmp_path):
+    from datetime import timedelta
+
+    from app.analytics.analysis import analyse_workout
+    from app.analytics.terrain import infer_terrain
+    from app.models import Athlete, Trackpoint, Workout
+    from app.persistence import Store
+
+    db = tmp_path / "t.db"
+    # A stale session whose id drifted by 3 seconds (an earlier edit truncated the seconds).
+    start = datetime(2026, 9, 6, 6, 29, 0, tzinfo=timezone.utc)
+    stale = Workout(id="20260906T062900", source="manual_treadmill", start_time=start,
+                    duration_s=600, distance_m=1000,
+                    trackpoints=[Trackpoint(timestamp=start, elapsed_s=0, distance_m=0)])
+    stale.terrain = infer_terrain(stale)
+    with Store(db) as s:
+        s.upsert_workout(stale, analyse_workout(stale, Athlete()))
+
+    real_start = start + timedelta(seconds=3)
+    real = Workout(id="20260906T062903", source="tcx", start_time=real_start,
+                   duration_s=605, distance_m=1010,
+                   trackpoints=[Trackpoint(timestamp=real_start, elapsed_s=0, distance_m=0)])
+    with Store(db) as s:
+        removed = s.delete_near_duplicates(real.start_time, real.id)
+        s.upsert_workout(real, analyse_workout(real, Athlete()))
+        remaining = [w["id"] for w in s.list_workouts()]
+    assert removed == ["20260906T062900"]
+    assert remaining == ["20260906T062903"]
+
+
+def test_delete_workout_endpoint(tmp_path):
+    client = TestClient(create_app(str(tmp_path / "t.db")))
+    created = client.post(
+        "/workouts/treadmill",
+        json={"description": "20 min at 5mph", "start_time": "2026-08-01T07:00:00"},
+    ).json()
+    wid = created["workout_id"]
+    assert client.delete(f"/workouts/{wid}").status_code == 200
+    assert client.get(f"/workouts/{wid}").status_code == 404
+    assert client.delete(f"/workouts/{wid}").status_code == 404
+

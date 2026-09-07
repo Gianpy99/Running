@@ -24,6 +24,7 @@ def build_feature_snapshot(analysis: dict) -> dict:
         "aerobic_efficiency": analysis.get("aerobic_efficiency", {}),
         "hr_suspect_fraction": analysis.get("hr_quality", {}).get("suspect_fraction"),
         "equivalent_flat_pace": analysis.get("equivalent_flat_pace", {}),
+        "treadmill_effort": analysis.get("treadmill_effort", {}),
     }
 
 
@@ -71,6 +72,14 @@ def explain_session(analysis: dict) -> dict:
     eff = snap["aerobic_efficiency"]
     if eff.get("available"):
         parts.append(f"Aerobic efficiency {eff['efficiency_mps_per_bpm']} m/s per bpm.")
+
+    tm = snap.get("treadmill_effort", {})
+    if tm.get("available"):
+        parts.append(
+            f"Treadmill plan (reported): {tm['avg_incline_pct']}% avg incline, "
+            f"grade-adjusted equivalent-flat pace {_pace_str(tm['equivalent_flat_pace_s_per_km'])} "
+            f"(incline adds ~{tm['incline_effort_pct']}% effort vs the same speed on the flat)."
+        )
 
     output = {
         "narrative": " ".join(parts),

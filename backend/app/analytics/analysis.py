@@ -12,7 +12,7 @@ from .load import training_load
 from .metrics import basic_metrics, hr_zone_distribution, splits
 from .quality import annotate_hr_quality, quality_summary
 from .segmentation import segment_workout
-from .terrain import elevation_profile, equivalent_flat_pace, infer_terrain
+from .terrain import elevation_profile, equivalent_flat_pace, infer_terrain, treadmill_effort
 
 
 def analyse_workout(workout: Workout, athlete: Athlete, rpe: int | None = None) -> dict:
@@ -40,6 +40,7 @@ def analyse_workout(workout: Workout, athlete: Athlete, rpe: int | None = None) 
         "segmentation": segment_workout(workout),
         "elevation": elevation,
         "equivalent_flat_pace": equivalent_flat_pace(workout),
+        "treadmill_effort": treadmill_effort(workout),
         "aerobic_efficiency": aerobic_efficiency(workout),
         "hr_drift": hr_drift(workout),
         "training_load": training_load(workout, athlete, rpe=rpe),

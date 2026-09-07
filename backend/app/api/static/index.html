@@ -248,6 +248,7 @@ async function openWorkout(id) {
       <h3>${analysis.session_type} · ${analysis.terrain.replace('_',' ')}</h3>
       <div class="hint" style="color:var(--muted)">${new Date(analysis.start_time).toLocaleString()}</div>
       ${analysis.terrain === 'treadmill' ? `<button class="upload-btn" style="margin:.4rem 0" onclick="editTreadmill('${id}')">✏️ Edit treadmill</button>` : ''}
+      <button class="upload-btn" style="margin:.4rem 0 .4rem .4rem;background:var(--red);color:#fff" onclick="deleteWorkout('${id}')">🗑 Delete</button>
       ${ai?.output?.narrative ? `<div class="narrative">🧠 ${ai.output.narrative}</div>` : ''}
       <div class="cards">
         ${card('Distance', (m.distance_m/1000).toFixed(2), 'km')}
@@ -277,6 +278,18 @@ async function openWorkout(id) {
 }
 function closeModal() { document.getElementById('overlay').classList.remove('open'); }
 document.getElementById('overlay').addEventListener('click', e => { if (e.target.id==='overlay') closeModal(); });
+
+async function deleteWorkout(id) {
+  if (!confirm('Delete this session? This cannot be undone.')) return;
+  try {
+    const r = await fetch(`/workouts/${id}`, { method: 'DELETE' });
+    if (!r.ok) throw new Error('delete failed');
+    closeModal();
+    await init();
+  } catch (e) {
+    alert('Could not delete this session.');
+  }
+}
 
 function setUploadStatus(msg, cls='') {
   const el = document.getElementById('uploadStatus');

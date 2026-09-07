@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from ..models import BodyMeasurement, RecoveryContext, Workout
@@ -166,6 +166,31 @@ class _BaseStore:
         self._exec("DELETE FROM analyses WHERE workout_id = ?", (workout_id,))
         self.conn.commit()
         return cur.rowcount > 0
+
+    def delete_near_duplicates(
+        self, start_time: datetime, keep_id: str, tolerance_s: float = 120.0
+    ) -> list[str]:
+        """Delete workouts starting within ``tolerance_s`` of ``start_time`` (except keep_id).
+
+        Re-importing or editing a run can shift its id (e.g. the seconds get truncated),
+        leaving a stale duplicate. Runs never overlap, so a near-identical start time means
+        it is the same session. Returns the ids removed.
+        """
+        anchor = start_time if start_time.tzinfo else start_time.replace(tzinfo=timezone.utc)
+        removed: list[str] = []
+        rows = self._exec("SELECT id, start_time FROM workouts").fetchall()
+        for r in rows:
+            if r["id"] == keep_id:
+                continue
+            try:
+                other = datetime.fromisoformat(r["start_time"])
+            except (TypeError, ValueError):
+                continue
+            other = other if other.tzinfo else other.replace(tzinfo=timezone.utc)
+            if abs((anchor - other).total_seconds()) <= tolerance_s:
+                self.delete_workout(r["id"])
+                removed.append(r["id"])
+        return removed
 
     # --- body ---
     def upsert_body_measurements(self, measurements: list[BodyMeasurement]) -> int:

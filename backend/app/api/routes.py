@@ -119,6 +119,13 @@ def create_app(db_path: str | None = None) -> FastAPI:
         with store() as s:
             return s.list_workouts()
 
+    @app.delete("/workouts/{workout_id}")
+    def delete_workout(workout_id: str) -> dict:
+        with store() as s:
+            if not s.delete_workout(workout_id):
+                raise HTTPException(404, "workout not found")
+        return {"status": "ok", "deleted": workout_id}
+
     @app.get("/workouts/{workout_id}")
     def get_workout(workout_id: str) -> dict:
         with store() as s:
@@ -155,11 +162,16 @@ def create_app(db_path: str | None = None) -> FastAPI:
         analysis = analyse_workout(workout, ATHLETE)
         with store() as s:
             existing = s.get_workout(workout.id) is not None
+            # A re-import whose id drifted (e.g. an earlier edit truncated the seconds)
+            # would otherwise leave a stale duplicate; treat a near-identical start as the
+            # same run and replace it.
+            merged = s.delete_near_duplicates(workout.start_time, workout.id)
             s.upsert_workout(workout, analysis)
         return {
             "status": "ok",
             "workout_id": workout.id,
-            "already_existed": existing,
+            "already_existed": existing or bool(merged),
+            "replaced_duplicates": merged,
             "source_file": workout.source_file,
             "start_time": workout.start_time.isoformat(),
             "session_type": workout.session_type.value,
@@ -241,12 +253,14 @@ def create_app(db_path: str | None = None) -> FastAPI:
             # Retroactive edit that shifts the start time leaves a stale row behind; drop it.
             if payload.workout_id and payload.workout_id != workout.id:
                 s.delete_workout(payload.workout_id)
+            merged = s.delete_near_duplicates(workout.start_time, workout.id)
             s.upsert_workout(workout, analysis)
         return {
             "status": "ok",
             "mode": "synthetic",
             "workout_id": workout.id,
-            "already_existed": already_existed,
+            "already_existed": already_existed or bool(merged),
+            "replaced_duplicates": merged,
             "start_time": workout.start_time.isoformat(),
             "session_type": workout.session_type.value,
             "terrain": workout.terrain.value,

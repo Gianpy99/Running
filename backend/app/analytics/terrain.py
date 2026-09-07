@@ -107,3 +107,71 @@ def equivalent_flat_pace(workout: Workout) -> dict:
         "confidence": confidence,
         "model": {"grade_cost_up": GRADE_COST_UP, "grade_cost_down": GRADE_COST_DOWN},
     }
+
+
+def treadmill_effort(workout: Workout) -> dict:
+    """Grade-adjusted effort from the athlete's reported treadmill plan (PRD §9.4, §15).
+
+    A treadmill has no GPS, so incline is only known from what the athlete typed. This turns
+    that description into numbers: each phase's speed and incline give a grade-adjusted
+    equivalent-flat pace, so running at 2% is scored as harder than the same speed at 1%.
+    """
+    from ..ingestion.treadmill_log import MPH_TO_MPS, parse_treadmill_log
+
+    if infer_terrain(workout) != TerrainType.TREADMILL:
+        return {"available": False, "reason": "not_treadmill"}
+
+    phases: list[dict] = []
+    if workout.notes:
+        try:
+            for p in parse_treadmill_log(workout.notes).phases:
+                phases.append({"type": p.type.value, "duration_min": p.duration_min,
+                               "speed_mph": p.speed_mph, "incline_pct": p.incline_pct})
+        except ValueError:
+            phases = []
+    if not phases and workout.treadmill_speed_mph:
+        phases = [{"type": "aerobic", "duration_min": (workout.duration_s or 0) / 60.0,
+                   "speed_mph": workout.treadmill_speed_mph,
+                   "incline_pct": workout.treadmill_incline_pct}]
+    if not phases:
+        return {"available": False, "reason": "no_treadmill_plan"}
+
+    total_time_s = 0.0
+    adj_time_s = 0.0
+    distance_km = 0.0
+    incline_time = 0.0
+    incline_weight = 0.0
+    for ph in phases:
+        speed_mph = ph["speed_mph"]
+        dur_min = ph["duration_min"] or 0.0
+        if not speed_mph or dur_min <= 0:
+            continue
+        grade_pct = ph["incline_pct"] or 0.0
+        # Same Minetti-inspired cost the outdoor equivalent-flat pace uses.
+        factor = max(0.5, 1.0 + GRADE_COST_UP * grade_pct)
+        t = dur_min * 60.0
+        total_time_s += t
+        adj_time_s += t / factor
+        distance_km += (speed_mph * MPH_TO_MPS) * t / 1000.0
+        incline_time += grade_pct * dur_min
+        incline_weight += dur_min
+
+    if distance_km <= 0:
+        return {"available": False, "reason": "no_speed_in_plan"}
+
+    raw_pace = total_time_s / distance_km
+    eq_pace = adj_time_s / distance_km
+    return {
+        "available": True,
+        "terrain": TerrainType.TREADMILL.value,
+        "source": "athlete_reported",
+        "phases": phases,
+        "avg_incline_pct": round(incline_time / incline_weight, 2) if incline_weight else 0.0,
+        "distance_km": round(distance_km, 2),
+        "avg_pace_s_per_km": round(raw_pace, 1),
+        "equivalent_flat_pace_s_per_km": round(eq_pace, 1),
+        # How much the reported incline stiffens the effort vs the same speed on the flat.
+        "incline_effort_pct": round((raw_pace - eq_pace) / raw_pace * 100.0, 1),
+        "model": {"grade_cost_up": GRADE_COST_UP},
+    }
+
