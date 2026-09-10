@@ -195,13 +195,19 @@ class _BaseStore:
     # --- body ---
     def upsert_body_measurements(self, measurements: list[BodyMeasurement]) -> int:
         for m in measurements:
+            day_prefix = f"{m.timestamp.date().isoformat()}%"
+            self._exec(
+                "DELETE FROM body_measurements WHERE timestamp LIKE ? AND timestamp <> ?",
+                (day_prefix, m.timestamp.isoformat()),
+            )
             self._exec(
                 """INSERT INTO body_measurements
                    (timestamp, weight_kg, body_fat_pct, muscle_mass_kg, water_pct, source)
                    VALUES (?,?,?,?,?,?)
                    ON CONFLICT(timestamp) DO UPDATE SET
                      weight_kg=excluded.weight_kg, body_fat_pct=excluded.body_fat_pct,
-                     muscle_mass_kg=excluded.muscle_mass_kg, water_pct=excluded.water_pct""",
+                     muscle_mass_kg=excluded.muscle_mass_kg, water_pct=excluded.water_pct,
+                     source=excluded.source""",
                 (m.timestamp.isoformat(), m.weight_kg, m.body_fat_pct,
                  m.muscle_mass_kg, m.water_pct, m.source),
             )
