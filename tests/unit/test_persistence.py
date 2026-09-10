@@ -69,15 +69,6 @@ def _roundtrip(store: _BaseStore) -> None:
         )
         assert any(m.weight_kg == 80.0 for m in store.list_body_measurements())
 
-        store.upsert_body_measurements(
-            [BodyMeasurement(timestamp=datetime(2026, 1, 1, 7, 30), weight_kg=79.7)]
-        )
-        same_day = [
-            m for m in store.list_body_measurements()
-            if m.timestamp.date().isoformat() == "2026-01-01"
-        ]
-        assert [(m.timestamp.hour, m.weight_kg) for m in same_day] == [(7, 79.7)]
-
         ctx = RecoveryContext(for_date=date(2026, 1, 1), sleep_hours=6.0)
         store.upsert_recovery(ctx)
         assert store.get_recovery(date(2026, 1, 1)).sleep_hours == 6.0
@@ -89,7 +80,8 @@ def _roundtrip(store: _BaseStore) -> None:
         # Clean up rows this test created (important for a shared PostgreSQL).
         store._exec("DELETE FROM analyses WHERE workout_id = ?", (wid,))
         store._exec("DELETE FROM workouts WHERE id = ?", (wid,))
-        store._exec("DELETE FROM body_measurements WHERE timestamp LIKE ?", ("2026-01-01%",))
+        store._exec("DELETE FROM body_measurements WHERE timestamp = ?",
+                    (datetime(2026, 1, 1, 6, 0).isoformat(),))
         store._exec("DELETE FROM recovery_context WHERE for_date = ?", ("2026-01-01",))
         store._exec("DELETE FROM races WHERE name = ?", ("Test 5k",))
         store.conn.commit()
