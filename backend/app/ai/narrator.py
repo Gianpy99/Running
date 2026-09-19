@@ -46,7 +46,9 @@ def _envelope(kind: str, snapshot: dict, output: dict) -> dict:
 def _pace_str(seconds: float | None) -> str:
     if not seconds:
         return "n/a"
-    return f"{int(seconds) // 60}:{int(seconds) % 60:02d}/km"
+    # Rounded, not truncated, to match how the dashboard formats the same number.
+    total = round(seconds)
+    return f"{total // 60}:{total % 60:02d}/km"
 
 
 def explain_session(analysis: dict) -> dict:
@@ -59,15 +61,25 @@ def explain_session(analysis: dict) -> dict:
         f"{snap['avg_hr'] if snap['avg_hr'] else 'n/a'} bpm)."
     ]
     main = snap.get("main_set", {})
-    if main.get("available"):
+    if main.get("available") and main.get("avg_pace_s_per_km"):
         # The headline pace above includes the easy ends; quote the work on its own so a
         # warmup-heavy session is not mistaken for a slow one (§15).
+        estimated = main.get("pace_source") == "session_total_minus_easy_ends"
         parts.append(
             f"Excluding {round(main['warmup_s'] / 60)} min warmup and "
             f"{round(main['cooldown_s'] / 60)} min cooldown "
             f"({round(main['duration_s'] / 60)} min of work), the main set averaged "
             f"{_pace_str(main['avg_pace_s_per_km'])}"
-            + (f" at {main['avg_hr']} bpm." if main.get("avg_hr") else ".")
+            + (f" at {main['avg_hr']} bpm" if main.get("avg_hr") else "")
+            + (" (pace estimated: this export records heart rate only)." if estimated else ".")
+        )
+    elif main.get("available"):
+        parts.append(
+            f"Excluding {round(main['warmup_s'] / 60)} min warmup and "
+            f"{round(main['cooldown_s'] / 60)} min cooldown, the main set averaged "
+            f"{main['avg_hr']} bpm; pace could not be separated because no distance was recorded."
+            if main.get("avg_hr") else
+            "Main set could not be measured separately: no distance or heart rate was recorded."
         )
     drift = snap["hr_drift"]
     if drift.get("available"):

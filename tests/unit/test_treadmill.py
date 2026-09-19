@@ -266,7 +266,7 @@ def test_delete_workout_endpoint(tmp_path):
 
 
 def test_main_set_uses_the_declared_warmup_and_cooldown():
-    """The athlete typed the phases, so the window is exact, not inferred from pace."""
+    """The athlete typed the phases, so the window is exact, not assumed from habit."""
     from app.analytics.mainset import main_set_window
 
     workout = build_treadmill_workout(SAMPLE, avg_hr=145)
@@ -280,8 +280,18 @@ def test_main_set_uses_the_declared_warmup_and_cooldown():
     assert window["cooldown_s"] == 300.0
 
 
+def test_declared_description_overrides_the_habitual_default():
+    """"30 min at 5mph" says there was no warmup, so none is assumed."""
+    from app.analytics.mainset import main_set_window
+
+    window = main_set_window(build_treadmill_workout("30 min at 5mph"))
+    assert window["available"] is False
+    assert window["reason"] == "no_warmup_or_cooldown"
+    assert window["method"] == "declared"
+
+
 def test_main_set_pace_excludes_the_slow_warmup_and_cooldown():
-    from app.analytics.analysis import main_set_metrics
+    from app.analytics.mainset import main_set_metrics
     from app.analytics.metrics import basic_metrics
 
     workout = build_treadmill_workout(SAMPLE, avg_hr=145)
@@ -291,5 +301,59 @@ def test_main_set_pace_excludes_the_slow_warmup_and_cooldown():
     # The easy warmup and ramp-down cooldown cost ~40 s/km on the session average.
     assert whole["avg_pace_s_per_km"] - main["avg_pace_s_per_km"] > 30
     assert main["duration_s"] == 1800.0
+
+
+def test_main_set_pace_when_the_export_records_heart_rate_only():
+    """Treadmill TCX files often carry one lap total and no per-point distance at all.
+
+    The session average still works out as total/total, but the split does not, so the
+    habitual easy ends are priced from their speeds and taken off the measured total.
+    """
+    from datetime import timedelta
+
+    from app.analytics.mainset import main_set_metrics
+    from app.models import Athlete, Trackpoint, Workout
+
+    start = datetime(2026, 9, 1, 6, 0, tzinfo=timezone.utc)
+    total_s, total_m = 2775.0, 6235.557
+    workout = Workout(
+        id="hr-only", source="tcx", start_time=start, duration_s=total_s, distance_m=total_m,
+        trackpoints=[
+            Trackpoint(timestamp=start + timedelta(seconds=t), elapsed_s=float(t),
+                       distance_m=0.0, speed_mps=0.0, hr_bpm=150)
+            for t in range(0, int(total_s) + 1, 5)
+        ],
+    )
+    main = main_set_metrics(workout, Athlete())
+    assert main["method"] == "athlete_default"
+    assert main["pace_source"] == "session_total_minus_easy_ends"
+    # 10 min at 4 mph = 1072.9 m; the 4.5/4/3.5/3/2.5 mph cooldown = 469.4 m.
+    assert main["warmup_m"] == pytest.approx(1072.9, abs=0.5)
+    assert main["cooldown_m"] == pytest.approx(469.4, abs=0.5)
+    assert main["distance_m"] == pytest.approx(total_m - 1542.3, abs=1.0)
+    assert main["duration_s"] == total_s - 900.0
+
+
+def test_pace_stays_unavailable_when_nothing_can_support_it():
+    """No distance recorded and no speeds to price the easy ends: report it, don't guess."""
+    from datetime import timedelta
+
+    from app.analytics.mainset import main_set_metrics
+    from app.models import Athlete, Trackpoint, Workout
+
+    start = datetime(2026, 9, 2, 6, 0, tzinfo=timezone.utc)
+    workout = Workout(
+        id="no-distance", source="tcx", start_time=start, duration_s=2400.0, distance_m=0.0,
+        trackpoints=[
+            Trackpoint(timestamp=start + timedelta(seconds=t), elapsed_s=float(t),
+                       distance_m=0.0, speed_mps=0.0, hr_bpm=150)
+            for t in range(0, 2401, 5)
+        ],
+    )
+    main = main_set_metrics(workout, Athlete())
+    assert main["available"] is True
+    assert main["avg_pace_s_per_km"] is None
+    assert main["pace_reason"] == "no_distance_recorded"
+    assert main["avg_hr"] == 150  # heart rate is measured, so it is still reported
 
 

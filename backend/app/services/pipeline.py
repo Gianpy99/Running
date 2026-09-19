@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..analytics.analysis import analyse_workout
+from ..analytics.analysis import ANALYSIS_VERSION, analyse_workout
 from ..analytics.terrain import infer_terrain
 from ..ingestion import parse_tcx_file, read_scale_xls
 from ..models import Athlete, Workout
@@ -30,17 +30,20 @@ def reanalyse_stored_workouts(store, athlete: Athlete | None = None, only_missin
     """Re-run the analytics pipeline over workouts already in the store (PRD §27).
 
     The canonical trackpoints are persisted alongside each workout, so analyses can be
-    regenerated without the raw files. Used to backfill fields added after a session was
-    first imported (e.g. main-set metrics) without forcing a full re-import.
+    regenerated without the raw files. Used to rebuild analyses after the pipeline changes,
+    without forcing a full re-import.
 
     With ``only_missing`` (the default) a workout is skipped when its stored analysis
-    already carries the newest fields, making startup backfill effectively free.
+    already carries the current `ANALYSIS_VERSION`, making startup backfill effectively
+    free. Checking the version rather than the presence of a field matters: an analysis
+    written by an earlier build can contain the right keys with superseded values.
     Returns the number of workouts re-analysed.
     """
     athlete = athlete or Athlete()
     updated = 0
     for row in store.list_workouts():
-        if only_missing and "metrics_main_set" in (store.get_analysis(row["id"]) or {}):
+        stored = store.get_analysis(row["id"]) or {}
+        if only_missing and stored.get("analysis_version") == ANALYSIS_VERSION:
             continue
         workout = store.get_workout(row["id"])
         if workout is None or not workout.trackpoints:

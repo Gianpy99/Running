@@ -9,25 +9,15 @@ from __future__ import annotations
 from ..models import Athlete, Workout
 from .efficiency import aerobic_efficiency, hr_drift
 from .load import training_load
-from .mainset import main_set_window
+from .mainset import main_set_metrics
 from .metrics import basic_metrics, hr_zone_distribution, splits
 from .quality import annotate_hr_quality, quality_summary
 from .segmentation import segment_workout
 from .terrain import elevation_profile, equivalent_flat_pace, infer_terrain, treadmill_effort
 
-
-def main_set_metrics(workout: Workout) -> dict:
-    """Stats for the real training, with the warmup and cooldown taken out (§9.2, §15).
-
-    The athlete's easy first and last kilometres otherwise drag the session averages down,
-    making a good main set look slower than it was run. Returns the same shape as
-    `basic_metrics` plus the window and the method used to find it, or
-    ``{"available": False, "reason": ...}`` when there is nothing to separate.
-    """
-    window = main_set_window(workout)
-    if not window.get("available"):
-        return window
-    return {**window, **basic_metrics(workout, window=(window["start_s"], window["end_s"]))}
+# Bumped whenever the analysis document changes shape or a model/threshold moves, so a
+# deploy can tell which stored analyses are stale and rebuild exactly those (§27).
+ANALYSIS_VERSION = 3
 
 
 def analyse_workout(workout: Workout, athlete: Athlete, rpe: int | None = None) -> dict:
@@ -38,7 +28,7 @@ def analyse_workout(workout: Workout, athlete: Athlete, rpe: int | None = None) 
     workout.avg_hr = metrics["avg_hr"]
     workout.avg_pace_s_per_km = metrics["avg_pace_s_per_km"]
 
-    main_set = main_set_metrics(workout)
+    main_set = main_set_metrics(workout, athlete)
     workout.main_set_avg_pace_s_per_km = main_set.get("avg_pace_s_per_km")
     workout.main_set_avg_hr = main_set.get("avg_hr")
 
@@ -48,6 +38,7 @@ def analyse_workout(workout: Workout, athlete: Athlete, rpe: int | None = None) 
 
     return {
         "workout_id": workout.id,
+        "analysis_version": ANALYSIS_VERSION,
         "source_file": workout.source_file,
         "start_time": workout.start_time.isoformat(),
         "session_type": workout.session_type.value,

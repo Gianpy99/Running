@@ -88,6 +88,34 @@ def test_reanalyse_backfills_main_set_metrics_for_stored_workouts(tmp_path):
         assert reanalyse_stored_workouts(store) == 0
 
 
+def test_reanalyse_rebuilds_analyses_written_by_a_superseded_version(tmp_path):
+    """An older build can leave the right keys holding stale values, so check the version.
+
+    Presence of `metrics_main_set` is not evidence it is current: the first release of the
+    feature wrote that key with figures a later build supersedes.
+    """
+    from app.analytics.analysis import ANALYSIS_VERSION
+    from app.ingestion import build_treadmill_workout
+    from app.services.pipeline import reanalyse_stored_workouts
+
+    db = str(tmp_path / "stale.db")
+    workout = build_treadmill_workout("10 min warmup at 4mph\n25 min at 4.7mph\n5 min cooldown")
+    _legacy_database(db, workout)
+
+    with open_store(db) as store:
+        store._exec(
+            "UPDATE analyses SET analysis_json = ? WHERE workout_id = ?",
+            (json.dumps({"analysis_version": ANALYSIS_VERSION - 1,
+                         "metrics_main_set": {"available": True, "avg_pace_s_per_km": 1.0}}),
+             workout.id),
+        )
+        store.conn.commit()
+        assert reanalyse_stored_workouts(store) == 1
+        analysis = store.get_analysis(workout.id)
+        assert analysis["analysis_version"] == ANALYSIS_VERSION
+        assert analysis["metrics_main_set"]["avg_pace_s_per_km"] > 1.0
+
+
 def test_open_store_selects_sqlite_for_paths(tmp_path):
     store = open_store(str(tmp_path / "x.db"))
     assert isinstance(store, SqliteStore)
