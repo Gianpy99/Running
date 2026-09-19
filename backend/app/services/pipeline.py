@@ -26,6 +26,31 @@ def process_tcx_file(path: str | Path, athlete: Athlete) -> tuple[Workout, dict]
     return workout, analysis
 
 
+def reanalyse_stored_workouts(store, athlete: Athlete | None = None, only_missing: bool = True) -> int:
+    """Re-run the analytics pipeline over workouts already in the store (PRD §27).
+
+    The canonical trackpoints are persisted alongside each workout, so analyses can be
+    regenerated without the raw files. Used to backfill fields added after a session was
+    first imported (e.g. main-set metrics) without forcing a full re-import.
+
+    With ``only_missing`` (the default) a workout is skipped when its stored analysis
+    already carries the newest fields, making startup backfill effectively free.
+    Returns the number of workouts re-analysed.
+    """
+    athlete = athlete or Athlete()
+    updated = 0
+    for row in store.list_workouts():
+        if only_missing and "metrics_main_set" in (store.get_analysis(row["id"]) or {}):
+            continue
+        workout = store.get_workout(row["id"])
+        if workout is None or not workout.trackpoints:
+            continue
+        analysis = analyse_workout(workout, athlete)
+        store.upsert_workout(workout, analysis)
+        updated += 1
+    return updated
+
+
 def process_raw_directory(
     raw_dir: str | Path, athlete: Athlete | None = None
 ) -> dict:

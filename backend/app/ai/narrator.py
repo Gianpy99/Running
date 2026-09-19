@@ -20,6 +20,7 @@ def build_feature_snapshot(analysis: dict) -> dict:
         "duration_min": round((m.get("duration_s") or 0) / 60.0, 1),
         "avg_hr": m.get("avg_hr"),
         "avg_pace_s_per_km": m.get("avg_pace_s_per_km"),
+        "main_set": analysis.get("metrics_main_set", {}),
         "hr_drift": analysis.get("hr_drift", {}),
         "aerobic_efficiency": analysis.get("aerobic_efficiency", {}),
         "hr_suspect_fraction": analysis.get("hr_quality", {}).get("suspect_fraction"),
@@ -57,6 +58,17 @@ def explain_session(analysis: dict) -> dict:
         f"(avg pace {_pace_str(snap['avg_pace_s_per_km'])}, avg HR "
         f"{snap['avg_hr'] if snap['avg_hr'] else 'n/a'} bpm)."
     ]
+    main = snap.get("main_set", {})
+    if main.get("available"):
+        # The headline pace above includes the easy ends; quote the work on its own so a
+        # warmup-heavy session is not mistaken for a slow one (§15).
+        parts.append(
+            f"Excluding {round(main['warmup_s'] / 60)} min warmup and "
+            f"{round(main['cooldown_s'] / 60)} min cooldown "
+            f"({round(main['duration_s'] / 60)} min of work), the main set averaged "
+            f"{_pace_str(main['avg_pace_s_per_km'])}"
+            + (f" at {main['avg_hr']} bpm." if main.get("avg_hr") else ".")
+        )
     drift = snap["hr_drift"]
     if drift.get("available"):
         parts.append(

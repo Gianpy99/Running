@@ -24,6 +24,9 @@ class Workout(BaseModel):
     elevation_loss_m: float | None = None
     avg_hr: int | None = None
     avg_pace_s_per_km: float | None = None
+    # Same figures over the main set only, i.e. with warmup/cooldown excluded (§9.2, §15).
+    main_set_avg_pace_s_per_km: float | None = None
+    main_set_avg_hr: int | None = None
     session_type: SessionType = SessionType.UNCLASSIFIED
     terrain: TerrainType = TerrainType.UNKNOWN
     completion: CompletionStatus = CompletionStatus.UNKNOWN

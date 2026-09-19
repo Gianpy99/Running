@@ -158,9 +158,9 @@ function renderOverview(d) {
 function chartPanels() {
   return `<div class="grid">
     <div class="panel"><h2>Distance per session</h2><p class="hint">bars = session km, line = cumulative</p><canvas id="c_distance"></canvas></div>
-    <div class="panel"><h2>Pace trend</h2><p class="hint">avg pace per session (lower is faster)</p><canvas id="c_pace"></canvas></div>
+    <div class="panel"><h2>Pace trend</h2><p class="hint">avg pace per session (lower is faster) — dashed = main set, warmup/cooldown excluded</p><canvas id="c_pace"></canvas></div>
     <div class="panel"><h2>Training load</h2><p class="hint">per session with 3-session rolling average</p><canvas id="c_load"></canvas></div>
-    <div class="panel"><h2>Avg heart rate</h2><p class="hint">per session (suspect HR down-weighted)</p><canvas id="c_hr"></canvas></div>
+    <div class="panel"><h2>Avg heart rate</h2><p class="hint">per session (suspect HR down-weighted) — dashed = main set</p><canvas id="c_hr"></canvas></div>
     <div class="panel"><h2>Body weight</h2><p class="hint">rolling trend from smart scale</p><canvas id="c_weight"></canvas></div>
     <div class="panel"><h2>Session mix</h2><p class="hint">how your sessions are classified</p><canvas id="c_mix"></canvas></div>
   </div>`;
@@ -176,13 +176,14 @@ function workoutsTable(w) {
       <td>${x.duration_min}</td>
       <td>${x.avg_hr ?? '—'}</td>
       <td>${fmtPace(x.avg_pace_s_per_km)}</td>
+      <td>${x.main_set_avg_pace_s_per_km ? fmtPace(x.main_set_avg_pace_s_per_km) : '—'}</td>
       <td>${x.hr_suspect_fraction > 0.1 ? `<span class="warn">${Math.round(x.hr_suspect_fraction*100)}%</span>` : '—'}</td>
     </tr>`).join('');
   return `<div class="panel wide" style="margin-top:1.1rem">
     <h2>All sessions</h2><p class="hint">click a row for splits, HR, elevation and the AI narrative</p>
     <div style="overflow:auto; max-height:420px">
     <table><thead><tr><th>Date</th><th>Type</th><th>Terrain</th><th>km</th><th>min</th>
-      <th>HR</th><th>Pace</th><th>HR flags</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+      <th>HR</th><th>Pace</th><th>Main set</th><th>HR flags</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 
 function drawCharts(d) {
@@ -194,11 +195,15 @@ function drawCharts(d) {
     { type:'bar', label:'km', data: w.map(x=>x.distance_km), backgroundColor:'#3fb6ff88', yAxisID:'y' },
     { type:'line', label:'cumulative km', data: cumSeries, borderColor:'#35c46b', tension:.3, yAxisID:'y1', pointRadius:0 },
   ], { type:'bar', y1:true });
-  // pace
+  // pace — whole session vs main set (warmup/cooldown excluded)
+  const hasMainSetPace = w.some(x => x.main_set_avg_pace_s_per_km);
   lineChart('c_pace', labels, [
     { label:'pace (min/km)', data: w.map(x=>x.avg_pace_s_per_km? x.avg_pace_s_per_km/60 : null),
       borderColor:'#b07cff', backgroundColor:'#b07cff33', tension:.3, spanGaps:true, pointRadius:3,
-      pointBackgroundColor: w.map(x=>x.terrain==='treadmill'?'#f2b134':'#b07cff') }
+      pointBackgroundColor: w.map(x=>x.terrain==='treadmill'?'#f2b134':'#b07cff') },
+    ...(hasMainSetPace ? [{ label:'main-set pace (min/km)',
+      data: w.map(x=>x.main_set_avg_pace_s_per_km? x.main_set_avg_pace_s_per_km/60 : null),
+      borderColor:'#35c46b', borderDash:[6,4], tension:.3, spanGaps:true, pointRadius:2 }] : []),
   ], { reverseY:true, yTitle:'min/km' });
   // load + rolling
   const loads = w.map(x=>x.load||0);
@@ -207,10 +212,13 @@ function drawCharts(d) {
     { type:'bar', label:'load', data:loads, backgroundColor:'#f2b13488' },
     { type:'line', label:'rolling', data:roll, borderColor:'#ef5350', tension:.3, pointRadius:0 },
   ], { type:'bar' });
-  // hr
+  // hr — whole session vs main set
+  const hasMainSetHr = w.some(x => x.main_set_avg_hr);
   lineChart('c_hr', labels, [
     { label:'avg HR', data: w.map(x=>x.avg_hr), borderColor:'#ef5350', backgroundColor:'#ef535033',
-      tension:.3, spanGaps:true, pointRadius:3 }
+      tension:.3, spanGaps:true, pointRadius:3 },
+    ...(hasMainSetHr ? [{ label:'main-set HR', data: w.map(x=>x.main_set_avg_hr),
+      borderColor:'#f2b134', borderDash:[6,4], tension:.3, spanGaps:true, pointRadius:2 }] : []),
   ], { yTitle:'bpm' });
   // weight
   if (d.body && d.body.series?.length) {
@@ -260,10 +268,12 @@ async function openWorkout(id) {
         ${eq.available ? card('Flat-equiv pace', fmtPace(eq.equivalent_flat_pace_s_per_km), '/km') : ''}
       </div>
       ${ms && ms.available ? `<div class="panel" style="margin-top:.8rem">
-        <h2>Main set (warmup/cooldown trimmed)</h2>
-        <div class="hint" style="color:var(--muted)">Trimmed ${Math.round(ms.trimmed_s/60)} min of warmup/cooldown (${ms.trimmed_pct}% of session)</div>
+        <h2>Main set — warmup &amp; cooldown excluded</h2>
+        <div class="hint" style="color:var(--muted)">Excluded ${Math.round(ms.warmup_s/60)} min warmup + ${Math.round(ms.cooldown_s/60)} min cooldown
+          (${ms.trimmed_pct}% of the session)${ms.method === 'declared' ? ', from your own description' : ', detected from pace'}</div>
         <div class="cards">
-          ${card('Distance', (ms.distance_m/1000).toFixed(2), 'km')}
+          ${card('Main-set distance', (ms.distance_m/1000).toFixed(2), 'km')}
+          ${card('Main-set time', Math.round(ms.duration_s/60), 'min')}
           ${card('Main-set pace', fmtPace(ms.avg_pace_s_per_km), '/km')}
           ${card('Main-set HR', ms.avg_hr ?? '—', 'bpm')}
         </div>

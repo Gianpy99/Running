@@ -61,6 +61,13 @@ CREATE TABLE IF NOT EXISTS recovery_context (
 );
 """
 
+# Columns added after the initial schema shipped. ``CREATE TABLE IF NOT EXISTS`` leaves
+# existing deployments untouched, so they are applied separately and idempotently.
+_ADDED_WORKOUT_COLUMNS = (
+    ("main_set_avg_pace_s_per_km", "{REAL}"),
+    ("main_set_avg_hr", "INTEGER"),
+)
+
 _RACES_SQLITE = """
 CREATE TABLE IF NOT EXISTS races (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,28 +115,49 @@ class _BaseStore:
     def close(self) -> None:
         self.conn.close()
 
+    def _migrate(self, real_type: str) -> None:
+        """Add post-release columns to an existing `workouts` table, idempotently.
+
+        SQLite has no ``ADD COLUMN IF NOT EXISTS``, so an already-migrated database raises
+        a duplicate-column error here; that is the success case and is swallowed. Each
+        statement runs in its own transaction so one no-op cannot abort the others (a
+        failed statement poisons the whole PostgreSQL transaction otherwise).
+        """
+        for name, ddl_type in _ADDED_WORKOUT_COLUMNS:
+            try:
+                self.conn.execute(
+                    f"ALTER TABLE workouts ADD COLUMN {name} {ddl_type.format(REAL=real_type)}"
+                )
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+
     # --- workouts ---
     def upsert_workout(self, workout: Workout, analysis: dict | None = None) -> None:
         self._exec(
             """INSERT INTO workouts
                (id, source, source_file, start_time, duration_s, distance_m,
                 session_type, terrain, completion, avg_hr, avg_pace_s_per_km,
+                main_set_avg_pace_s_per_km, main_set_avg_hr,
                 elevation_gain_m, notes, canonical_json)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
                  source=excluded.source, source_file=excluded.source_file,
                  start_time=excluded.start_time, duration_s=excluded.duration_s,
                  distance_m=excluded.distance_m, session_type=excluded.session_type,
                  terrain=excluded.terrain, completion=excluded.completion,
                  avg_hr=excluded.avg_hr, avg_pace_s_per_km=excluded.avg_pace_s_per_km,
+                 main_set_avg_pace_s_per_km=excluded.main_set_avg_pace_s_per_km,
+                 main_set_avg_hr=excluded.main_set_avg_hr,
                  elevation_gain_m=excluded.elevation_gain_m, notes=excluded.notes,
                  canonical_json=excluded.canonical_json""",
             (
                 workout.id, workout.source, workout.source_file,
                 workout.start_time.isoformat(), workout.duration_s, workout.distance_m,
                 workout.session_type.value, workout.terrain.value, workout.completion.value,
-                workout.avg_hr, workout.avg_pace_s_per_km, workout.elevation_gain_m,
-                workout.notes, workout.model_dump_json(),
+                workout.avg_hr, workout.avg_pace_s_per_km,
+                workout.main_set_avg_pace_s_per_km, workout.main_set_avg_hr,
+                workout.elevation_gain_m, workout.notes, workout.model_dump_json(),
             ),
         )
         if analysis is not None:
@@ -143,7 +171,8 @@ class _BaseStore:
     def list_workouts(self) -> list[dict]:
         rows = self._exec(
             """SELECT id, source_file, start_time, duration_s, distance_m, session_type,
-                      terrain, completion, avg_hr, avg_pace_s_per_km, elevation_gain_m
+                      terrain, completion, avg_hr, avg_pace_s_per_km,
+                      main_set_avg_pace_s_per_km, main_set_avg_hr, elevation_gain_m
                FROM workouts ORDER BY start_time"""
         ).fetchall()
         return [dict(r) for r in rows]
@@ -267,6 +296,7 @@ class SqliteStore(_BaseStore):
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(_COMMON_TABLES.format(REAL="REAL") + _RACES_SQLITE)
         self.conn.commit()
+        self._migrate("REAL")
 
     def _insert_race(self, name, race_date, distance_m, target_time_s, verified) -> int:
         cur = self._exec(
@@ -297,6 +327,7 @@ class PostgresStore(_BaseStore):
             cur.execute(_COMMON_TABLES.format(REAL="DOUBLE PRECISION"))
             cur.execute(_RACES_POSTGRES)
         self.conn.commit()
+        self._migrate("DOUBLE PRECISION")
 
     def _insert_race(self, name, race_date, distance_m, target_time_s, verified) -> int:
         row = self._exec(

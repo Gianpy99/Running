@@ -264,3 +264,32 @@ def test_delete_workout_endpoint(tmp_path):
     assert client.get(f"/workouts/{wid}").status_code == 404
     assert client.delete(f"/workouts/{wid}").status_code == 404
 
+
+def test_main_set_uses_the_declared_warmup_and_cooldown():
+    """The athlete typed the phases, so the window is exact, not inferred from pace."""
+    from app.analytics.mainset import main_set_window
+
+    workout = build_treadmill_workout(SAMPLE, avg_hr=145)
+    window = main_set_window(workout)
+    assert window["available"] is True
+    assert window["method"] == "declared"
+    # 10 min warmup, then 30 min of work, then a 5 min cooldown, to the second.
+    assert window["start_s"] == 600.0
+    assert window["end_s"] == 2400.0
+    assert window["warmup_s"] == 600.0
+    assert window["cooldown_s"] == 300.0
+
+
+def test_main_set_pace_excludes_the_slow_warmup_and_cooldown():
+    from app.analytics.analysis import main_set_metrics
+    from app.analytics.metrics import basic_metrics
+
+    workout = build_treadmill_workout(SAMPLE, avg_hr=145)
+    whole, main = basic_metrics(workout), main_set_metrics(workout)
+    # Work is 25 min @ 4.7 mph + 5 min @ 5.0 mph -> 4.75 mph average -> ~7:51/km.
+    assert main["avg_pace_s_per_km"] == pytest.approx(471, abs=5)
+    # The easy warmup and ramp-down cooldown cost ~40 s/km on the session average.
+    assert whole["avg_pace_s_per_km"] - main["avg_pace_s_per_km"] > 30
+    assert main["duration_s"] == 1800.0
+
+

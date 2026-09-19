@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from app.analytics.analysis import analyse_workout
+from app.analytics.analysis import analyse_workout, main_set_metrics
 from app.analytics.efficiency import aerobic_efficiency, hr_drift
 from app.analytics.load import training_load
+from app.analytics.mainset import main_set_window
 from app.analytics.metrics import basic_metrics
-from app.analytics.segmentation import main_set_window, segment_workout
+from app.analytics.segmentation import segment_workout
 from app.analytics.terrain import elevation_profile, equivalent_flat_pace
 from app.models import Athlete
 
@@ -86,45 +87,44 @@ def test_elevation_profile_gain():
     assert prof["elevation_gain_m"] > 0
 
 
-def _treadmill_like_run():
-    """10 min slow warmup, 35 min main set at a faster steady pace, 5 min slow cooldown."""
-    samples = (
-        [{"t": t, "speed": 2.0, "hr": 120} for t in range(0, 600, 5)]
-        + [{"t": t, "speed": 2.6, "hr": 155} for t in range(600, 2700, 5)]
-        + [{"t": t, "speed": 2.0, "hr": 125} for t in range(2700, 3000, 5)]
-    )
-    return make_workout(samples)
+def _tempo_run():
+    """10 min easy warmup, 30 min tempo, 5 min easy cooldown — with GPS, so no plan text."""
+    speeds = [2.0] * 120 + [2.9] * 360 + [2.0] * 60
+    return make_workout([
+        {"t": i * 5, "speed": s, "hr": 130 if s < 2.5 else 160, "lat": 51.0 + i * 1e-5, "lon": -0.5}
+        for i, s in enumerate(speeds)
+    ])
 
 
-def test_main_set_window_trims_warmup_and_cooldown():
-    w = _treadmill_like_run()
-    window = main_set_window(w)
-    assert window is not None
-    start_s, end_s = window
-    assert 590 <= start_s <= 610
-    assert 2690 <= end_s <= 2710
+def test_main_set_detected_window_matches_the_tempo_block():
+    window = main_set_window(_tempo_run())
+    assert window["available"] is True
+    assert window["method"] == "detected"
+    # The tempo block runs from 10:00 to 40:00; warmup and cooldown are excluded exactly.
+    assert window["start_s"] == 600.0
+    assert window["end_s"] == 2400.0
 
 
-def test_main_set_metrics_pace_faster_than_whole_session():
-    w = _treadmill_like_run()
-    whole = basic_metrics(w)
-    window = main_set_window(w)
-    main = basic_metrics(w, window=window)
-    # Warmup/cooldown were slower, so trimming them should yield a faster (lower) pace.
+def test_main_set_metrics_isolate_the_real_effort():
+    w = _tempo_run()
+    whole, main = basic_metrics(w), main_set_metrics(w)
+    # Easy warmup/cooldown drag the session average down; the main set is the true effort.
     assert main["avg_pace_s_per_km"] < whole["avg_pace_s_per_km"]
-    assert main["avg_hr"] > whole["avg_hr"]
+    assert main["avg_hr"] == 160  # pure tempo HR, none of the easy running
+    assert main["duration_s"] == 1800.0
 
 
-def test_analyse_workout_exposes_metrics_main_set():
-    w = _treadmill_like_run()
+def test_main_set_unavailable_without_warmup_or_cooldown():
+    w = make_workout(_steady_run(1800, 2.5, 150))
+    assert main_set_window(w)["available"] is False
+
+
+def test_analyse_workout_exposes_main_set_metrics():
+    w = _tempo_run()
     result = analyse_workout(w, Athlete(max_hr=185))
     ms = result["metrics_main_set"]
     assert ms["available"] is True
-    assert ms["trimmed_s"] > 0
     assert ms["avg_pace_s_per_km"] < result["metrics"]["avg_pace_s_per_km"]
-
-
-def test_main_set_unavailable_when_no_warmup_cooldown():
-    w = make_workout(_steady_run(600, 2.5, 150))
-    result = analyse_workout(w, Athlete(max_hr=185))
-    assert result["metrics_main_set"]["available"] is False
+    # The workout carries the figures so trend charts need no re-analysis.
+    assert w.main_set_avg_pace_s_per_km == ms["avg_pace_s_per_km"]
+    assert w.main_set_avg_hr == ms["avg_hr"]

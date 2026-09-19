@@ -7,6 +7,7 @@ narrator output (PRD §12). Real-time/safety logic is never delegated to AI.
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -23,7 +24,7 @@ from ..persistence import open_store
 from ..persistence.store import _BaseStore
 from ..services.body_trends import weight_trend
 from ..services.classification import classify_session
-from ..services.pipeline import process_raw_directory
+from ..services.pipeline import process_raw_directory, reanalyse_stored_workouts
 from ..services.readiness import compute_readiness
 from ..training.dsl import load_definition, standard_treadmill_session
 from ..training.planner import adapt_definition, generate_next_session
@@ -93,11 +94,43 @@ def _recent_loads(store: _BaseStore) -> tuple[float, float, bool]:
 
 def create_app(db_path: str | None = None) -> FastAPI:
     dsn = db_path or os.environ.get("DATABASE_URL") or os.environ.get("COACH_DB", "data/coach.db")
-    app = FastAPI(title="AI Running Coach", version="0.1.0",
-                  description="Deterministic running analytics core (PRD v2.0)")
 
     def store():
         return open_store(dsn)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        """Regenerate stored analyses that predate the newest analytics fields (§27).
+
+        The database outlives a deploy, so sessions imported by an older build would keep
+        serving analyses without (for example) main-set metrics until they were manually
+        re-imported. Workouts already carrying the current fields are skipped, so this is a
+        no-op on a warm database. A failure here must never stop the API from booting.
+        """
+        if os.environ.get("COACH_AUTO_REANALYSE", "1") != "0":
+            try:
+                with store() as s:
+                    updated = reanalyse_stored_workouts(s, ATHLETE)
+                if updated:
+                    print(f"[startup] Re-analysed {updated} workout(s) to backfill new metrics.")
+            except Exception as exc:  # pragma: no cover - defensive, never block startup
+                print(f"[startup] Analysis backfill skipped: {type(exc).__name__}: {exc}")
+        yield
+
+    app = FastAPI(title="AI Running Coach", version="0.1.0",
+                  description="Deterministic running analytics core (PRD v2.0)",
+                  lifespan=lifespan)
+
+    @app.post("/workouts/reanalyse")
+    def reanalyse(force: bool = Body(False, embed=True)) -> dict:
+        """Re-run analytics over every stored workout, reusing the persisted trackpoints.
+
+        By default only workouts missing the newest analysis fields are touched; pass
+        ``force`` to rebuild them all (e.g. after changing a threshold or model).
+        """
+        with store() as s:
+            updated = reanalyse_stored_workouts(s, ATHLETE, only_missing=not force)
+        return {"status": "ok", "reanalysed": updated, "forced": force}
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     def index() -> str:
@@ -459,6 +492,9 @@ def create_app(db_path: str | None = None) -> FastAPI:
                     "duration_min": round((w["duration_s"] or 0) / 60.0, 1),
                     "avg_hr": w["avg_hr"],
                     "avg_pace_s_per_km": w["avg_pace_s_per_km"],
+                    "main_set_avg_pace_s_per_km": w["main_set_avg_pace_s_per_km"],
+                    "main_set_avg_hr": w["main_set_avg_hr"],
+                    "main_set_trimmed_s": (a or {}).get("metrics_main_set", {}).get("trimmed_s") if a else None,
                     "elevation_gain_m": w["elevation_gain_m"],
                     "load": (a or {}).get("training_load", {}).get("load") if a else None,
                     "hr_drift_pct": (a or {}).get("hr_drift", {}).get("drift_pct") if a else None,

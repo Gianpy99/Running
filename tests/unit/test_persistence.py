@@ -9,7 +9,9 @@ against the shared PostgreSQL). It is skipped otherwise so the suite stays herme
 
 from __future__ import annotations
 
+import json
 import os
+import sqlite3
 import uuid
 from datetime import date, datetime, timezone
 
@@ -18,6 +20,72 @@ import pytest
 from app.models import BodyMeasurement, RecoveryContext, Workout
 from app.persistence import PostgresStore, SqliteStore, open_store
 from app.persistence.store import _BaseStore
+
+
+_LEGACY_SCHEMA = """
+CREATE TABLE workouts (
+    id TEXT PRIMARY KEY, source TEXT, source_file TEXT, start_time TEXT NOT NULL,
+    duration_s REAL, distance_m REAL, session_type TEXT, terrain TEXT, completion TEXT,
+    avg_hr INTEGER, avg_pace_s_per_km REAL, elevation_gain_m REAL, notes TEXT,
+    canonical_json TEXT NOT NULL
+);
+CREATE TABLE analyses (workout_id TEXT PRIMARY KEY, analysis_json TEXT NOT NULL);
+"""
+
+
+def _legacy_database(path: str, workout: Workout) -> None:
+    """Write a database shaped like the schema that shipped before main-set metrics."""
+    conn = sqlite3.connect(path)
+    conn.executescript(_LEGACY_SCHEMA)
+    conn.execute(
+        """INSERT INTO workouts (id, source, start_time, duration_s, distance_m, session_type,
+           terrain, completion, avg_hr, avg_pace_s_per_km, notes, canonical_json)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (workout.id, workout.source, workout.start_time.isoformat(), workout.duration_s,
+         workout.distance_m, "easy", "treadmill", "unknown", 145, 511.0,
+         workout.notes, workout.model_dump_json()),
+    )
+    conn.execute(
+        "INSERT INTO analyses VALUES (?, ?)",
+        (workout.id, json.dumps({"metrics": {"avg_pace_s_per_km": 511.0}})),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_opening_a_legacy_database_adds_the_new_columns(tmp_path):
+    """A deployed database predates the main-set columns; opening it must migrate, not fail."""
+    from app.ingestion import build_treadmill_workout
+
+    db = str(tmp_path / "legacy.db")
+    workout = build_treadmill_workout("10 min warmup at 4mph\n25 min at 4.7mph\n5 min cooldown")
+    _legacy_database(db, workout)
+
+    with open_store(db) as store:
+        row = store.list_workouts()[0]
+        assert row["main_set_avg_pace_s_per_km"] is None  # column exists, not yet populated
+        # Re-opening must stay a no-op rather than re-adding the column.
+    with open_store(db) as store:
+        assert "main_set_avg_hr" in store.list_workouts()[0]
+
+
+def test_reanalyse_backfills_main_set_metrics_for_stored_workouts(tmp_path):
+    """Sessions imported by an older build get the new metrics without a re-import (§27)."""
+    from app.ingestion import build_treadmill_workout
+    from app.services.pipeline import reanalyse_stored_workouts
+
+    db = str(tmp_path / "legacy.db")
+    workout = build_treadmill_workout("10 min warmup at 4mph\n25 min at 4.7mph\n5 min cooldown")
+    _legacy_database(db, workout)
+
+    with open_store(db) as store:
+        assert reanalyse_stored_workouts(store) == 1
+        row = store.list_workouts()[0]
+        # Warmup/cooldown excluded, so the main set is faster than the stored session pace.
+        assert row["main_set_avg_pace_s_per_km"] < row["avg_pace_s_per_km"]
+        assert store.get_analysis(workout.id)["metrics_main_set"]["method"] == "declared"
+        # Already-current workouts are skipped on the next pass.
+        assert reanalyse_stored_workouts(store) == 0
 
 
 def test_open_store_selects_sqlite_for_paths(tmp_path):

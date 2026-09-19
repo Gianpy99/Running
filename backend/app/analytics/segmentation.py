@@ -50,7 +50,8 @@ def _classify(speed: float, elapsed: float, total: float) -> SegmentType:
     return SegmentType.FAST
 
 
-def _segment_workout_raw(workout: Workout) -> list[Segment]:
+def segment_workout(workout: Workout) -> dict:
+    """Return ordered segments with the thresholds used (reproducible, §9.2)."""
     pts = workout.trackpoints
     total = workout.duration_s or (pts[-1].elapsed_s if pts else 0.0)
     raw: list[tuple[SegmentType, float, float, float | None, float | None]] = []
@@ -64,12 +65,7 @@ def _segment_workout_raw(workout: Workout) -> list[Segment]:
         label = _classify(speed, cur.elapsed_s, total)
         raw.append((label, prev.elapsed_s, cur.elapsed_s, speed, cur.hr_bpm))
 
-    return _coalesce(raw)
-
-
-def segment_workout(workout: Workout) -> dict:
-    """Return ordered segments with the thresholds used (reproducible, §9.2)."""
-    segments = _segment_workout_raw(workout)
+    segments = _coalesce(raw)
     return {
         "segments": [asdict(s) for s in segments],
         "thresholds": {
@@ -81,39 +77,6 @@ def segment_workout(workout: Workout) -> dict:
             "min_segment_s": MIN_SEGMENT_S,
         },
     }
-
-
-# Leading segments of these types are the warmup (and any pause/walk before it starts);
-# trailing segments of these types are the cooldown. Kept separate because a middle
-# recovery segment (between hard efforts) is still part of the "real" training.
-_LEADING_TRIM_TYPES = {SegmentType.WARMUP, SegmentType.PAUSED, SegmentType.WALKING}
-_TRAILING_TRIM_TYPES = {SegmentType.COOLDOWN, SegmentType.PAUSED, SegmentType.WALKING}
-
-
-def main_set_window(workout: Workout) -> tuple[float, float] | None:
-    """Elapsed-seconds window of the "real" training, trimming warmup/cooldown (§9.2, §15).
-
-    Treadmill sessions (and many outdoor ones) start with an easy warmup and end with an
-    easy cooldown that drag down whole-session averages. This finds the leading run of
-    warmup/pause/walk segments and the trailing run of cooldown/pause/walk segments and
-    returns the window in between. Returns None if the whole session is warmup/cooldown/
-    paused (nothing left to call "main set"), or there are no segments at all.
-    """
-    segments = _segment_workout_raw(workout)
-    if not segments:
-        return None
-
-    start_idx = 0
-    while start_idx < len(segments) and SegmentType(segments[start_idx].type) in _LEADING_TRIM_TYPES:
-        start_idx += 1
-    end_idx = len(segments) - 1
-    while end_idx >= 0 and SegmentType(segments[end_idx].type) in _TRAILING_TRIM_TYPES:
-        end_idx -= 1
-
-    if start_idx > end_idx:
-        return None
-
-    return (segments[start_idx].start_s, segments[end_idx].end_s)
 
 
 def _coalesce(raw) -> list[Segment]:
