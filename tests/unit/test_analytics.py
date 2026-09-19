@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from app.analytics.analysis import analyse_workout
 from app.analytics.efficiency import aerobic_efficiency, hr_drift
 from app.analytics.load import training_load
 from app.analytics.metrics import basic_metrics
-from app.analytics.segmentation import segment_workout
+from app.analytics.segmentation import main_set_window, segment_workout
 from app.analytics.terrain import elevation_profile, equivalent_flat_pace
 from app.models import Athlete
 
@@ -83,3 +84,47 @@ def test_elevation_profile_gain():
     prof = elevation_profile(w)
     assert prof["has_elevation"] is True
     assert prof["elevation_gain_m"] > 0
+
+
+def _treadmill_like_run():
+    """10 min slow warmup, 35 min main set at a faster steady pace, 5 min slow cooldown."""
+    samples = (
+        [{"t": t, "speed": 2.0, "hr": 120} for t in range(0, 600, 5)]
+        + [{"t": t, "speed": 2.6, "hr": 155} for t in range(600, 2700, 5)]
+        + [{"t": t, "speed": 2.0, "hr": 125} for t in range(2700, 3000, 5)]
+    )
+    return make_workout(samples)
+
+
+def test_main_set_window_trims_warmup_and_cooldown():
+    w = _treadmill_like_run()
+    window = main_set_window(w)
+    assert window is not None
+    start_s, end_s = window
+    assert 590 <= start_s <= 610
+    assert 2690 <= end_s <= 2710
+
+
+def test_main_set_metrics_pace_faster_than_whole_session():
+    w = _treadmill_like_run()
+    whole = basic_metrics(w)
+    window = main_set_window(w)
+    main = basic_metrics(w, window=window)
+    # Warmup/cooldown were slower, so trimming them should yield a faster (lower) pace.
+    assert main["avg_pace_s_per_km"] < whole["avg_pace_s_per_km"]
+    assert main["avg_hr"] > whole["avg_hr"]
+
+
+def test_analyse_workout_exposes_metrics_main_set():
+    w = _treadmill_like_run()
+    result = analyse_workout(w, Athlete(max_hr=185))
+    ms = result["metrics_main_set"]
+    assert ms["available"] is True
+    assert ms["trimmed_s"] > 0
+    assert ms["avg_pace_s_per_km"] < result["metrics"]["avg_pace_s_per_km"]
+
+
+def test_main_set_unavailable_when_no_warmup_cooldown():
+    w = make_workout(_steady_run(600, 2.5, 150))
+    result = analyse_workout(w, Athlete(max_hr=185))
+    assert result["metrics_main_set"]["available"] is False

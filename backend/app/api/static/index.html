@@ -244,6 +244,7 @@ async function openWorkout(id) {
     ]);
     const m = analysis.metrics;
     const eq = analysis.equivalent_flat_pace;
+    const ms = analysis.metrics_main_set;
     modal.innerHTML = `<button class="close" onclick="closeModal()">×</button>
       <h3>${analysis.session_type} · ${analysis.terrain.replace('_',' ')}</h3>
       <div class="hint" style="color:var(--muted)">${new Date(analysis.start_time).toLocaleString()}</div>
@@ -258,6 +259,15 @@ async function openWorkout(id) {
         ${card('Elev gain', analysis.elevation.elevation_gain_m ?? '—', 'm')}
         ${eq.available ? card('Flat-equiv pace', fmtPace(eq.equivalent_flat_pace_s_per_km), '/km') : ''}
       </div>
+      ${ms && ms.available ? `<div class="panel" style="margin-top:.8rem">
+        <h2>Main set (warmup/cooldown trimmed)</h2>
+        <div class="hint" style="color:var(--muted)">Trimmed ${Math.round(ms.trimmed_s/60)} min of warmup/cooldown (${ms.trimmed_pct}% of session)</div>
+        <div class="cards">
+          ${card('Distance', (ms.distance_m/1000).toFixed(2), 'km')}
+          ${card('Main-set pace', fmtPace(ms.avg_pace_s_per_km), '/km')}
+          ${card('Main-set HR', ms.avg_hr ?? '—', 'bpm')}
+        </div>
+      </div>` : ''}
       <div class="panel" style="margin-top:.8rem"><h2>Pace &amp; heart rate</h2><canvas id="c_detail"></canvas></div>
       ${streams.altitude_m.some(a=>a!=null) ? `<div class="panel" style="margin-top:.8rem"><h2>Elevation</h2><canvas id="c_elev"></canvas></div>` : ''}`;
     const xs = streams.elapsed_s.map(s => (s/60).toFixed(0));
