@@ -55,6 +55,7 @@ def standard_treadmill_session() -> WorkoutDefinition:
                 ],
             ),
             Phase(type=PhaseType.PROGRESSION, duration_min=5, speed_mph=5.0, incline_pct=1),
-            Phase(type=PhaseType.COOLDOWN, duration_min=5, speed_mph=3.5, incline_pct=0),
+            # No speed: the cooldown is always the standard walk-down ramp.
+            Phase(type=PhaseType.COOLDOWN, duration_min=5, incline_pct=0),
         ],
     )

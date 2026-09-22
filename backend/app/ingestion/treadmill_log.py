@@ -5,12 +5,15 @@ per line, e.g.::
 
     10 min warmup at 4mph
     25 min at 4.7mph with 1%
-    5 min at 5mph with 1%
+    6 x (1 min interval at 6mph + 2 min recovery at 4mph)
     5 min cooldown
 
 We parse that into the structured `WorkoutDefinition` DSL and project it onto a canonical
 `Workout` with synthesized trackpoints so the deterministic analytics pipeline treats it
 like any other session. Values are user-reported, not measured (terrain = treadmill).
+
+A line may also be a repeated block — ``N x (phase + phase + ...)`` — which expands to the
+same phases repeated N times, so fartlek and interval sessions stay short to write.
 """
 
 from __future__ import annotations
@@ -19,12 +22,12 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from ..models import Phase, Trackpoint, Workout, WorkoutDefinition
+from ..models.athlete import DEFAULT_COOLDOWN_RAMP_MPH
 from ..models.enums import PhaseType
 
 MPH_TO_MPS = 0.44704
 KMH_TO_MPH = 1.0 / 1.60934
 _TRACKPOINT_STEP_S = 10  # resolution of the synthesized time-series
-_COOLDOWN_STEPS = 5  # a speed-less cooldown ramps to a stop over this many minute-steps
 
 # Duration in hours / minutes / seconds. Minutes are the common case.
 _DURATION_RE = re.compile(
@@ -33,6 +36,9 @@ _DURATION_RE = re.compile(
 )
 _SPEED_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(mph|km/?h|kmh|kph)\b", re.IGNORECASE)
 _INCLINE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+# A repeated block: "6 x (1 min interval at 6mph + 2 min recovery at 4mph)".
+_REPEAT_RE = re.compile(r"^(\d+)\s*[x×*]\s*\((.+)\)$", re.IGNORECASE)
+_STEP_SPLIT_RE = re.compile(r"\s*[+,]\s*")
 
 _PHASE_KEYWORDS = [
     (("warmup", "warm up", "warm-up"), PhaseType.WARMUP),
@@ -67,62 +73,93 @@ def _phase_type(line: str) -> PhaseType:
     return PhaseType.AEROBIC
 
 
-def _phase_speed_mps(
-    phase: Phase, t_in_phase_s: float, prev_speed_mph: float | None
-) -> float | None:
+def _phase_speed_mps(phase: Phase, t_in_phase_s: float) -> float | None:
     """Instantaneous speed for a phase at ``t_in_phase_s`` seconds in.
 
-    A cooldown with no stated speed decelerates from the previous phase's speed, stepping
-    down by (previous speed / 5) each minute until it reaches a walk/stop.
+    A cooldown with no stated speed follows the athlete's habitual walk-down ramp
+    (`DEFAULT_COOLDOWN_RAMP_MPH`), one step per minute. That ramp is always the same, so a
+    cooldown only needs its duration; a longer one holds the final walking step.
     """
     if phase.speed_mph:
         return phase.speed_mph * MPH_TO_MPS
-    if phase.type == PhaseType.COOLDOWN and prev_speed_mph:
-        gap = prev_speed_mph / _COOLDOWN_STEPS
+    if phase.type == PhaseType.COOLDOWN:
         minute = int(t_in_phase_s // 60)
-        speed_mph = prev_speed_mph - gap * (minute + 1)
-        return speed_mph * MPH_TO_MPS if speed_mph > 0 else None
+        step = DEFAULT_COOLDOWN_RAMP_MPH[min(minute, len(DEFAULT_COOLDOWN_RAMP_MPH) - 1)]
+        return step * MPH_TO_MPS
     return None
 
 
-def parse_treadmill_log(text: str) -> WorkoutDefinition:
-    """Parse a multi-line treadmill description into a `WorkoutDefinition`.
+def _parse_phase(text: str) -> Phase:
+    """One phase from a single fragment, e.g. "25 min at 4.7mph with 1%"."""
+    dur_match = _DURATION_RE.search(text)
+    if not dur_match:
+        raise ValueError(f"no duration found in: {text.strip()!r}")
+    duration_min = _duration_to_minutes(float(dur_match.group(1)), dur_match.group(2))
 
-    Each non-blank line becomes one phase. A duration is required per line; speed and
-    incline are optional. Lines starting with '#' are treated as comments.
+    speed_mph = None
+    speed_match = _SPEED_RE.search(text)
+    if speed_match:
+        speed_mph = round(_speed_to_mph(float(speed_match.group(1)), speed_match.group(2)), 2)
+
+    incline_pct = None
+    incline_match = _INCLINE_RE.search(text)
+    if incline_match:
+        incline_pct = float(incline_match.group(1))
+
+    return Phase(
+        type=_phase_type(text),
+        duration_min=duration_min,
+        speed_mph=speed_mph,
+        incline_pct=incline_pct,
+    )
+
+
+def parse_treadmill_blocks(text: str) -> list[tuple[int, list[Phase]]]:
+    """Parse a description into ``(repeat_count, phases)`` blocks, preserving the grouping.
+
+    Most lines are a single phase and come back as ``(1, [phase])``. A line shaped like
+    ``6 x (1 min interval at 6mph + 2 min recovery at 4mph)`` comes back as the repeat count
+    and the phases of one round, which is what a fartlek or interval set looks like.
     """
-    phases: list[Phase] = []
+    blocks: list[tuple[int, list[Phase]]] = []
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
 
-        dur_match = _DURATION_RE.search(line)
-        if not dur_match:
-            raise ValueError(f"no duration found in line: {raw_line!r}")
-        duration_min = _duration_to_minutes(float(dur_match.group(1)), dur_match.group(2))
+        repeat_match = _REPEAT_RE.match(line)
+        if not repeat_match:
+            blocks.append((1, [_parse_phase(line)]))
+            continue
 
-        speed_mph = None
-        speed_match = _SPEED_RE.search(line)
-        if speed_match:
-            speed_mph = round(_speed_to_mph(float(speed_match.group(1)), speed_match.group(2)), 2)
+        repeat = int(repeat_match.group(1))
+        if repeat < 1:
+            raise ValueError(f"a repeat must run at least once: {raw_line!r}")
+        steps = [
+            _parse_phase(part)
+            for part in _STEP_SPLIT_RE.split(repeat_match.group(2))
+            if part.strip()
+        ]
+        if not steps:
+            raise ValueError(f"no phases inside the repeat: {raw_line!r}")
+        blocks.append((repeat, steps))
 
-        incline_pct = None
-        incline_match = _INCLINE_RE.search(line)
-        if incline_match:
-            incline_pct = float(incline_match.group(1))
-
-        phases.append(
-            Phase(
-                type=_phase_type(line),
-                duration_min=duration_min,
-                speed_mph=speed_mph,
-                incline_pct=incline_pct,
-            )
-        )
-
-    if not phases:
+    if not blocks:
         raise ValueError("no workout phases found in description")
+    return blocks
+
+
+def parse_treadmill_log(text: str) -> WorkoutDefinition:
+    """Parse a multi-line treadmill description into a `WorkoutDefinition`.
+
+    Each non-blank line becomes one phase, or — for a ``N x (... + ...)`` line — that
+    block's phases repeated N times. A duration is required per phase; speed and incline
+    are optional. Lines starting with '#' are treated as comments.
+    """
+    phases: list[Phase] = []
+    for repeat, steps in parse_treadmill_blocks(text):
+        for _ in range(repeat):
+            phases.extend(step.model_copy(deep=True) for step in steps)
     return WorkoutDefinition(name="Treadmill session", phases=phases)
 
 
@@ -148,12 +185,11 @@ def build_treadmill_workout(
     points: list[Trackpoint] = []
     elapsed_s = 0.0
     distance_m = 0.0
-    prev_speed_mph: float | None = None
     for phase in definition.phases:
         phase_s = (phase.duration_min or 0.0) * 60.0
         t = 0.0
         while t < phase_s:
-            speed_mps = _phase_speed_mps(phase, t, prev_speed_mph)
+            speed_mps = _phase_speed_mps(phase, t)
             points.append(
                 Trackpoint(
                     timestamp=start_time + timedelta(seconds=elapsed_s),
@@ -168,8 +204,6 @@ def build_treadmill_workout(
                 distance_m += speed_mps * step
             elapsed_s += step
             t += step
-        if phase.speed_mph:
-            prev_speed_mph = phase.speed_mph
 
     # Final closing sample at the exact end of the session.
     points.append(

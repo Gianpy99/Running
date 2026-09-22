@@ -60,14 +60,13 @@ def _phase_distance_m(phases: list, start_s: float, end_s: float) -> float:
     """Distance the phase plan covers between `start_s` and `end_s` on its own timeline.
 
     Integrated with the same per-phase speed rule the treadmill synthesiser uses, so a
-    cooldown written without a speed ramps down exactly as it does elsewhere. Phases with
-    no stated speed and no ramp to inherit contribute nothing.
+    cooldown written without a speed follows the standard walk-down ramp exactly as it does
+    elsewhere. Phases with no stated speed and no ramp to apply contribute nothing.
     """
     from ..ingestion.treadmill_log import _phase_speed_mps
 
     distance_m = 0.0
     cursor = 0.0
-    prev_speed_mph: float | None = None
     for phase in phases:
         phase_s = (phase.duration_min or 0.0) * 60.0
         t = 0.0
@@ -76,12 +75,10 @@ def _phase_distance_m(phases: list, start_s: float, end_s: float) -> float:
             sample_start, sample_end = cursor + t, cursor + t + step
             overlap = min(sample_end, end_s) - max(sample_start, start_s)
             if overlap > 0:
-                speed_mps = _phase_speed_mps(phase, t, prev_speed_mph)
+                speed_mps = _phase_speed_mps(phase, t)
                 if speed_mps:
                     distance_m += speed_mps * overlap
             t += step
-        if phase.speed_mph:
-            prev_speed_mph = phase.speed_mph
         cursor += phase_s
     return distance_m
 

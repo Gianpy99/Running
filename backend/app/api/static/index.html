@@ -70,6 +70,46 @@
   .upload-status { font-size: .8rem; color: var(--muted); }
   .upload-status.ok { color: var(--green); }
   .upload-status.err { color: var(--red); }
+  /* treadmill phase builder */
+  .tm-grid { display: grid; grid-template-columns: 1.4rem 1fr 4.4rem 5rem 4.4rem 1.4rem;
+             gap: .4rem; align-items: center; margin-bottom: .4rem; max-width: 34rem; }
+  .tm-grid .head { color: var(--muted); font-size: .7rem; text-transform: uppercase;
+                   letter-spacing: .04em; }
+  .tm-grid input, .tm-grid select { background: var(--panel2); color: var(--text); width: 100%;
+      border: 1px solid #2a3a48; border-radius: 6px; padding: .35rem; font: inherit;
+      font-size: .85rem; }
+  .tm-grid input[type=number] { text-align: right; }
+  .tm-grid input[type=checkbox] { width: auto; accent-color: var(--accent); }
+  .tm-row.off select, .tm-row.off input[type=number] { opacity: .35; }
+  .tm-rep { border: 1px solid var(--line); border-left: 3px solid var(--purple);
+            border-radius: 8px; padding: .5rem .6rem; margin-bottom: .45rem;
+            max-width: 35.3rem; background: rgba(176,124,255,.06); }
+  .tm-rep .tm-grid { max-width: none; }
+  .tm-rep-head { display: flex; align-items: center; gap: .4rem; margin-bottom: .5rem; }
+  .tm-rep-head input[type=checkbox] { accent-color: var(--accent); }
+  .tm-rep-head select { width: 15.4rem; background: var(--panel2); color: var(--text);
+      border: 1px solid #2a3a48; border-radius: 6px; padding: .35rem; font: inherit;
+      font-size: .85rem; }
+  .tm-rep-head .tm-reps { width: 3.4rem; text-align: right; background: var(--panel2);
+      color: var(--text); border: 1px solid #2a3a48; border-radius: 6px; padding: .3rem;
+      font: inherit; font-size: .85rem; }
+  .tm-rep-head .grow { flex: 1; }
+  .tm-rep-label { color: var(--muted); font-size: .8rem; }
+  .tm-rep.off .tm-rep-steps, .tm-rep.off .tm-reps { opacity: .35; }
+  .tm-del { background: none; border: none; color: var(--muted); cursor: pointer;
+            font-size: 1.15rem; line-height: 1; padding: 0; }
+  .tm-del:hover { color: var(--red); }
+  .tm-sum { color: var(--muted); font-size: .82rem; margin: .7rem 0 0; }
+  .tm-sum b { color: var(--text); font-weight: 600; }
+  .tm-link { background: none; border: none; color: var(--accent); cursor: pointer;
+             font-size: .8rem; padding: 0; }
+  .tm-link:hover { text-decoration: underline; }
+  .tm-field { color: var(--muted); font-size: .82rem; }
+  .tm-field input, .tm-text { background: var(--panel2); color: var(--text);
+      border: 1px solid #2a3a48; border-radius: 6px; padding: .35rem; font: inherit; }
+  .tm-field input { display: block; }
+  .tm-text { width: 100%; box-sizing: border-box; border-radius: 8px; padding: .6rem;
+             font-size: .9rem; resize: vertical; }
 </style>
 </head>
 <body>
@@ -374,6 +414,35 @@ document.getElementById('uploadInput').addEventListener('change', e => {
   e.target.value = '';
 });
 
+// ---- treadmill phase builder ------------------------------------------------
+// The stored session is still the free-text description the canonical parser reads; this
+// form just composes and re-reads that text so the athlete never has to type the syntax.
+const TM_TYPES = [['warmup', 'Warm-up'], ['aerobic', 'Core'], ['fartlek', 'Fartlek (repeats)'],
+                  ['progression', 'Push'], ['interval', 'Interval'], ['recovery', 'Recovery'],
+                  ['cooldown', 'Cool-down']];
+// Keyword the parser looks for per type. "Core" is the parser's default, so it needs none.
+const TM_KEYWORD = { warmup: 'warmup', aerobic: '', progression: 'progression',
+                     interval: 'interval', recovery: 'recovery', cooldown: 'cooldown' };
+const KMH_PER_MPH = 1.60934;
+// Used only if /plan can't be reached, so the form is never empty.
+const TM_FALLBACK = [
+  { type: 'warmup', duration_min: 10, speed_mph: 4.0, incline_pct: 1 },
+  { type: 'aerobic', duration_min: 25, speed_mph: 4.7, incline_pct: 1 },
+  { type: 'progression', duration_min: 5, speed_mph: 5.0, incline_pct: 1 },
+  { type: 'cooldown', duration_min: 5, incline_pct: 0 },
+];
+// Starting point for a new fartlek/interval set.
+const TM_NEW_REPEAT = { repeat: 6, phases: [
+  { type: 'interval', duration_min: 1, speed_mph: 6.0, incline_pct: 1 },
+  { type: 'recovery', duration_min: 2, speed_mph: 4.0, incline_pct: 1 },
+] };
+
+let _tmEditId = null;
+let _tmTextMode = false;
+let _tmCorePhase = null;  // the athlete's standard core, for swapping back from a fartlek
+
+const tmNum = n => (n == null || isNaN(n)) ? '' : String(Number(Number(n).toFixed(2)));
+
 function toLocalInput(iso) {
   // ISO timestamp -> value accepted by <input type="datetime-local"> (local time).
   const d = new Date(iso);
@@ -381,63 +450,326 @@ function toLocalInput(iso) {
   return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function openTreadmillModal(prefill = null) {
+async function tmPlanBlocks() {
+  let phases;
+  try { phases = (await j('/plan')).phases; } catch (e) { phases = TM_FALLBACK; }
+  _tmCorePhase = phases.find(p => p.type === 'aerobic') || _tmCorePhase;
+  return phases.map(p => ({ repeat: 1, phases: [p] }));
+}
+
+async function tmCorePhase() {
+  if (!_tmCorePhase) {
+    try { _tmCorePhase = (await j('/plan')).phases.find(p => p.type === 'aerobic'); } catch (e) {}
+  }
+  return _tmCorePhase || TM_FALLBACK.find(p => p.type === 'aerobic');
+}
+
+/** A top-level single phase row of `type`, or null. Repeat sets are skipped. */
+function tmFindRow(box, type) {
+  return [...box.children].find(el => !el.classList.contains('tm-rep')
+    && el.querySelector('.tm-type').value === type) || null;
+}
+
+/** The session always ends on the cool-down, so new work goes in just before it. */
+function tmInsertBeforeCooldown(box, html) {
+  const cool = tmFindRow(box, 'cooldown');
+  if (cool) cool.insertAdjacentHTML('beforebegin', html);
+  else box.insertAdjacentHTML('beforeend', html);
+}
+
+function tmReplaceWith(el, html) {
+  el.insertAdjacentHTML('beforebegin', html);
+  el.remove();
+}
+
+/** Picking "Fartlek" turns a slot into a repeat set, and picking anything else turns it
+ *  back into a single phase — so the core and the fartlek are alternatives in one control,
+ *  swapped in place so the push and cool-down keep their position. */
+async function tmSlotChanged(e) {
+  const sel = e.target;
+  if (sel.classList.contains('tm-type') && !sel.closest('.tm-rep') && sel.value === 'fartlek') {
+    tmReplaceWith(sel.closest('.tm-row'), tmRepHtml(TM_NEW_REPEAT));
+  } else if (sel.classList.contains('tm-type-rep') && sel.value !== 'fartlek') {
+    const phase = sel.value === 'aerobic' ? await tmCorePhase() : { type: sel.value };
+    tmReplaceWith(sel.closest('.tm-rep'), tmRowHtml(phase));
+  }
+  tmRefresh();
+}
+
+async function tmParseBlocks(description) {
+  if (!description) return null;
+  try {
+    const r = await fetch('/workouts/treadmill/parse', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ description }) });
+    if (!r.ok) return null;
+    return (await r.json()).blocks;
+  } catch (e) { return null; }
+}
+
+/** Phase options. "Fartlek" is a container, not a phase, so nested steps can't pick it. */
+function tmTypeOptions(selected, allowFartlek) {
+  return TM_TYPES
+    .filter(([v]) => allowFartlek || v !== 'fartlek')
+    .map(([v, l]) => `<option value="${v}"${v === selected ? ' selected' : ''}>${l}</option>`)
+    .join('');
+}
+
+function tmRowHtml(p, nested = false) {
+  // Phases inside a repeat are included or removed with the block, so they need no checkbox.
+  const lead = nested ? '<span></span>'
+    : '<input type="checkbox" class="tm-on" checked title="Include this phase">';
+  return `<div class="tm-grid tm-row">
+    ${lead}
+    <select class="tm-type">${tmTypeOptions(p.type, !nested)}</select>
+    <input type="number" class="tm-dur" min="0" step="1" value="${tmNum(p.duration_min)}">
+    <input type="number" class="tm-spd" min="0" step="0.1" value="${tmNum(p.speed_mph)}">
+    <input type="number" class="tm-inc" min="0" step="0.5" value="${tmNum(p.incline_pct)}">
+    <button type="button" class="tm-del" title="Remove phase">×</button>
+  </div>`;
+}
+
+function tmRepHtml(block) {
+  return `<div class="tm-rep">
+    <div class="tm-rep-head">
+      <input type="checkbox" class="tm-on-rep" checked title="Include this set">
+      <select class="tm-type-rep" title="Switch this slot back to a steady phase">
+        ${tmTypeOptions('fartlek', true)}</select>
+      <input type="number" class="tm-reps" min="1" step="1" value="${block.repeat}">
+      <span class="tm-rep-label">× times</span>
+      <span class="grow"></span>
+      <button type="button" class="tm-link tm-add-step">+ step</button>
+      <button type="button" class="tm-del-rep tm-del" title="Remove set">×</button>
+    </div>
+    <div class="tm-rep-steps">${block.phases.map(p => tmRowHtml(p, true)).join('')}</div>
+  </div>`;
+}
+
+const tmBlockHtml = b =>
+  (b.repeat > 1 || b.phases.length > 1) ? tmRepHtml(b) : tmRowHtml(b.phases[0]);
+
+function tmReadRow(r) {
+  const num = sel => { const v = r.querySelector(sel).value; return v === '' ? null : parseFloat(v); };
+  return { type: r.querySelector('.tm-type').value, duration_min: num('.tm-dur'),
+           speed_mph: num('.tm-spd'), incline_pct: num('.tm-inc') };
+}
+
+function tmBlocks() {
+  return [...document.getElementById('tmPhases').children].map(el => {
+    const isRep = el.classList.contains('tm-rep');
+    const box = isRep ? el.querySelector('.tm-on-rep') : el.querySelector('.tm-on');
+    return {
+      repeat: isRep ? Math.max(1, parseInt(el.querySelector('.tm-reps').value, 10) || 1) : 1,
+      on: box.checked,
+      phases: isRep ? [...el.querySelectorAll('.tm-row')].map(tmReadRow) : [tmReadRow(el)],
+    };
+  });
+}
+
+function tmPhaseText(p) {
+  const bits = [`${tmNum(p.duration_min)} min`];
+  if (TM_KEYWORD[p.type]) bits.push(TM_KEYWORD[p.type]);
+  if (p.speed_mph > 0) bits.push(`at ${tmNum(p.speed_mph)}mph`);
+  if (p.incline_pct != null) bits.push(`with ${tmNum(p.incline_pct)}%`);
+  return bits.join(' ');
+}
+
+function tmDescription() {
+  const lines = [];
+  for (const b of tmBlocks()) {
+    if (!b.on) continue;
+    const steps = b.phases.filter(p => p.duration_min > 0).map(tmPhaseText);
+    if (!steps.length) continue;
+    // Only a real repeat gets the compact "N x (...)" form; otherwise one phase per line,
+    // which is what the parser expects.
+    if (b.repeat > 1) lines.push(`${b.repeat} x (${steps.join(' + ')})`);
+    else lines.push(...steps);
+  }
+  return lines.join('\n');
+}
+
+// Mirrors DEFAULT_COOLDOWN_RAMP_MPH on the server: one step per minute.
+const TM_COOLDOWN_RAMP = [4.5, 4.0, 3.5, 3.0, 2.5];
+
+// Distance a phase covers, in km. A cooldown left without a speed walks the standard ramp.
+function tmPhaseKm(p) {
+  if (!(p.duration_min > 0)) return 0;
+  if (p.speed_mph > 0) return p.speed_mph * KMH_PER_MPH * p.duration_min / 60;
+  if (p.type !== 'cooldown') return 0;
+  let mph_min = 0;
+  for (let m = 0; m < Math.ceil(p.duration_min); m++) {
+    const step = TM_COOLDOWN_RAMP[Math.min(m, TM_COOLDOWN_RAMP.length - 1)];
+    mph_min += step * Math.min(1, p.duration_min - m);
+  }
+  return mph_min * KMH_PER_MPH / 60;
+}
+
+function tmRefresh() {
+  for (const el of document.getElementById('tmPhases').children) {
+    const box = el.querySelector('.tm-on-rep') || el.querySelector('.tm-on');
+    el.classList.toggle('off', box ? !box.checked : false);
+  }
+  // The cooldown ramp is fixed, so its speed box is optional and says so.
+  document.querySelectorAll('#tmPhases .tm-row').forEach(r => {
+    const cooling = r.querySelector('.tm-type').value === 'cooldown';
+    r.querySelector('.tm-spd').placeholder = cooling ? 'ramp' : '';
+  });
+  let mins = 0, km = 0;
+  for (const b of tmBlocks()) {
+    if (!b.on) continue;
+    for (const p of b.phases) {
+      if (!(p.duration_min > 0)) continue;
+      mins += p.duration_min * b.repeat;
+      km += tmPhaseKm(p) * b.repeat;
+    }
+  }
+  const el = document.getElementById('tmSum');
+  if (el) el.innerHTML = mins
+    ? `<b>${tmNum(mins)} min</b> total · about <b>${km.toFixed(2)} km</b> at these speeds`
+    : 'Add at least one phase with a duration.';
+}
+
+async function openTreadmillModal(prefill = null) {
   const modal = document.getElementById('modal');
-  const example = '10 min warmup at 4mph\n25 min at 4.7mph with 1%\n5 min at 5mph with 1%\n5 min cooldown';
+  modal.innerHTML = '<div class="loading">Loading…</div>';
+  document.getElementById('overlay').classList.add('open');
+
   const editing = !!prefill;
   _tmEditId = editing ? (prefill.workout_id || null) : null;
+  _tmTextMode = false;
   // A session recorded by the watch keeps its measured HR/pace; the text is only a note.
   const deviceRecorded = editing && prefill.source && prefill.source !== 'manual_treadmill';
-  const text = editing ? (prefill.description || '') : example;
+
+  let blocks, rawText = '';
+  if (editing && prefill.description) {
+    rawText = prefill.description;
+    blocks = await tmParseBlocks(rawText);
+    if (!blocks) { _tmTextMode = true; blocks = []; }  // legacy free text: edit it as-is
+  } else {
+    blocks = await tmPlanBlocks();
+  }
+
   const startVal = editing && prefill.start_time ? toLocalInput(prefill.start_time) : '';
   const hrVal = editing && prefill.avg_hr != null ? prefill.avg_hr : '';
   const deviceNote = deviceRecorded
     ? `<p style="color:var(--green);font-size:.82rem;margin:.2rem 0 .6rem">
-        ✔ Recorded by your watch — measured heart rate and pace are kept. Your text is saved as a note only.</p>`
+        ✔ Recorded by your watch — measured heart rate and distance are kept. These phases add
+        the speed and incline the watch could not see.</p>`
     : '';
   const measuredFields = deviceRecorded ? '' : `
-    <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin:.6rem 0">
-      <label style="color:var(--muted);font-size:.82rem">Date/time
-        <input id="tmStart" type="datetime-local" value="${startVal}"
-          style="display:block;background:var(--panel2);color:var(--text);border:1px solid #2a3a48;border-radius:6px;padding:.35rem"></label>
-      <label style="color:var(--muted);font-size:.82rem">Avg HR (optional)
+    <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin:.7rem 0 0">
+      <label class="tm-field">Date/time
+        <input id="tmStart" type="datetime-local" value="${startVal}"></label>
+      <label class="tm-field">Avg HR (optional)
         <input id="tmHr" type="number" min="60" max="220" placeholder="—" value="${hrVal}"
-          style="display:block;width:6rem;background:var(--panel2);color:var(--text);border:1px solid #2a3a48;border-radius:6px;padding:.35rem"></label>
+          style="width:6rem"></label>
     </div>`;
+
   modal.innerHTML = `
     <button class="close" onclick="closeModal()">×</button>
     <h3>${editing ? 'Edit treadmill session' : 'Log treadmill session'}</h3>
-    <p style="color:var(--muted);font-size:.85rem;margin:.2rem 0 .6rem">
-      No GPS on the treadmill — just describe what you did, one phase per line.</p>
+    <p style="color:var(--muted);font-size:.85rem;margin:.2rem 0 .7rem">
+      No GPS on the treadmill — set the phases you ran and the coach works out the rest.</p>
     ${deviceNote}
-    <textarea id="tmText" rows="6" placeholder="${example}"
-      style="width:100%;box-sizing:border-box;background:var(--panel2);color:var(--text);
-      border:1px solid #2a3a48;border-radius:8px;padding:.6rem;font-family:inherit;font-size:.9rem;resize:vertical">${text}</textarea>
+    <div id="tmBuilder"${_tmTextMode ? ' hidden' : ''}>
+      <div class="tm-grid">
+        <span></span><span class="head">Phase</span><span class="head">Min</span>
+        <span class="head">mph</span><span class="head">Incline %</span><span></span>
+      </div>
+      <div id="tmPhases">${blocks.map(tmBlockHtml).join('')}</div>
+      <div style="display:flex;gap:1.1rem;align-items:center;margin-top:.5rem;flex-wrap:wrap">
+        <button type="button" class="tm-link" id="tmAdd">+ Add phase</button>
+        <button type="button" class="tm-link" id="tmReset">Reset to my standard</button>
+      </div>
+      <p class="tm-sum" id="tmSum"></p>
+      <p class="tm-sum">Core or Fartlek is your choice in the Phase column. Leave the
+        cool-down speed empty — it always walks down 4.5 → 2.5 mph over 5 minutes.</p>
+    </div>
+    <div id="tmTextWrap"${_tmTextMode ? '' : ' hidden'}>
+      <textarea id="tmText" rows="6" class="tm-text"
+        placeholder="10 min warmup at 4mph">${rawText}</textarea>
+    </div>
     ${measuredFields}
-    <div style="display:flex;align-items:center;gap:.8rem;margin-top:.6rem">
+    <div style="display:flex;align-items:center;gap:.9rem;margin-top:.9rem;flex-wrap:wrap">
       <button id="tmSave" class="upload-btn">${editing ? 'Update session' : 'Save session'}</button>
+      <button type="button" class="tm-link" id="tmMode">
+        ${_tmTextMode ? 'Use the phase form' : 'Edit as text'}</button>
       <span id="tmStatus" class="upload-status"></span>
     </div>`;
-  document.getElementById('overlay').classList.add('open');
+
+  const phasesEl = document.getElementById('tmPhases');
+  phasesEl.addEventListener('input', tmRefresh);
+  phasesEl.addEventListener('change', tmSlotChanged);
+  phasesEl.addEventListener('click', async e => {
+    if (e.target.classList.contains('tm-del-rep')) {
+      e.target.closest('.tm-rep').remove();
+    } else if (e.target.classList.contains('tm-add-step')) {
+      e.target.closest('.tm-rep').querySelector('.tm-rep-steps')
+        .insertAdjacentHTML('beforeend', tmRowHtml({ type: 'recovery' }, true));
+    } else if (e.target.classList.contains('tm-del')) {
+      const row = e.target.closest('.tm-row');
+      const set = row.closest('.tm-rep');
+      row.remove();
+      // A set with no steps left has nothing to repeat.
+      if (set && !set.querySelector('.tm-row')) set.remove();
+    } else {
+      return;
+    }
+    tmRefresh();
+  });
+  document.getElementById('tmAdd').addEventListener('click', () => {
+    tmInsertBeforeCooldown(phasesEl, tmRowHtml({ type: 'aerobic' }));
+    tmRefresh();
+  });
+  document.getElementById('tmReset').addEventListener('click', async () => {
+    phasesEl.innerHTML = (await tmPlanBlocks()).map(tmBlockHtml).join('');
+    tmRefresh();
+  });
+  document.getElementById('tmMode').addEventListener('click', tmToggleMode);
   document.getElementById('tmSave').addEventListener('click', saveTreadmill);
+  tmRefresh();
 }
 
-let _tmEditId = null;
+async function tmToggleMode() {
+  const status = document.getElementById('tmStatus');
+  if (_tmTextMode) {
+    const blocks = await tmParseBlocks(document.getElementById('tmText').value.trim());
+    if (!blocks) {
+      status.textContent = 'Could not read that as phases — each line needs a duration';
+      status.className = 'upload-status err';
+      return;
+    }
+    document.getElementById('tmPhases').innerHTML = blocks.map(tmBlockHtml).join('');
+    _tmTextMode = false;
+  } else {
+    document.getElementById('tmText').value = tmDescription();
+    _tmTextMode = true;
+  }
+  status.textContent = ''; status.className = 'upload-status';
+  document.getElementById('tmBuilder').hidden = _tmTextMode;
+  document.getElementById('tmTextWrap').hidden = !_tmTextMode;
+  document.getElementById('tmMode').textContent =
+    _tmTextMode ? 'Use the phase form' : 'Edit as text';
+  tmRefresh();
+}
+
 async function editTreadmill(id) {
   try {
     const w = await j(`/workouts/${id}`);
-    openTreadmillModal({ workout_id: id, description: w.notes || '', start_time: w.start_time,
+    await openTreadmillModal({ workout_id: id, description: w.notes || '', start_time: w.start_time,
       avg_hr: w.avg_hr, source: w.source });
   } catch (e) {
-    openTreadmillModal();
+    await openTreadmillModal();
   }
 }
 
 async function saveTreadmill() {
   const btn = document.getElementById('tmSave');
   const status = document.getElementById('tmStatus');
-  const description = document.getElementById('tmText').value.trim();
-  if (!description) { status.textContent = 'Describe the session first'; status.className = 'upload-status err'; return; }
+  const description = _tmTextMode
+    ? document.getElementById('tmText').value.trim()
+    : tmDescription();
+  if (!description) { status.textContent = 'Add at least one phase first'; status.className = 'upload-status err'; return; }
   const payload = { description };
   if (_tmEditId) payload.workout_id = _tmEditId;
   const startEl = document.getElementById('tmStart');
@@ -466,7 +798,7 @@ async function saveTreadmill() {
   }
 }
 
-document.getElementById('treadmillBtn').addEventListener('click', openTreadmillModal);
+document.getElementById('treadmillBtn').addEventListener('click', () => openTreadmillModal());
 
 async function init() {
   const app = document.getElementById('app');

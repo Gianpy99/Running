@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api import create_app
-from app.ingestion import build_treadmill_workout, parse_treadmill_log
+from app.ingestion import build_treadmill_workout, parse_treadmill_blocks, parse_treadmill_log
 from app.models.enums import PhaseType, TerrainType
 
 SAMPLE = """10 min warmup at 4mph
@@ -56,23 +56,72 @@ def test_build_workout_totals():
     # Main effort = longest phase with a speed (25 min @ 4.7 mph, 1%).
     assert workout.treadmill_speed_mph == 4.7
     assert workout.treadmill_incline_pct == 1
-    # Running phases plus a cooldown that ramps 5 mph down to a stop over 5 minutes.
+    # Running phases plus the standard cooldown walk-down ramp.
     mps = 0.44704
     running_m = (10 * 4.0 + 25 * 4.7 + 5 * 5.0) * 60 * mps
-    cooldown_m = (4 + 3 + 2 + 1 + 0) * 60 * mps
+    cooldown_m = (4.5 + 4.0 + 3.5 + 3.0 + 2.5) * 60 * mps
     assert workout.distance_m == pytest.approx(running_m + cooldown_m, rel=0.02)
     assert not any(p.latitude is not None for p in workout.trackpoints)
 
 
-def test_cooldown_ramps_down_from_previous_speed():
+def test_cooldown_follows_standard_ramp():
     start = datetime(2026, 1, 2, 7, 0, tzinfo=timezone.utc)
     workout = build_treadmill_workout("5 min at 5mph\n5 min cooldown", start_time=start)
-    # gap = 5 / 5 = 1 mph per minute; cooldown minute speeds are 4, 3, 2, 1, then a stop.
+    # The walk-down is always the same, so it does not depend on the preceding speed.
     mph = lambda p: round((p.speed_mps or 0) / 0.44704, 1)
     minute = lambda m: next(p for p in workout.trackpoints if abs(p.elapsed_s - (300 + m * 60)) < 1)
-    assert mph(minute(0)) == 4.0
-    assert mph(minute(1)) == 3.0
-    assert mph(minute(4)) == 0.0
+    assert [mph(minute(m)) for m in range(5)] == [4.5, 4.0, 3.5, 3.0, 2.5]
+
+
+def test_cooldown_ramp_is_independent_of_previous_phase():
+    slow = build_treadmill_workout("5 min at 4mph\n5 min cooldown")
+    fast = build_treadmill_workout("5 min at 6mph\n5 min cooldown")
+    tail = lambda w: [round((p.speed_mps or 0) / 0.44704, 1)
+                      for p in w.trackpoints if p.elapsed_s >= 300]
+    assert tail(slow) == tail(fast)
+
+
+def test_parse_repeat_block():
+    blocks = parse_treadmill_blocks(
+        "10 min warmup at 4mph\n"
+        "6 x (1 min interval at 6mph with 1% + 2 min recovery at 4mph)\n"
+        "5 min cooldown"
+    )
+    assert [reps for reps, _ in blocks] == [1, 6, 1]
+    work, easy = blocks[1][1]
+    assert work.type == PhaseType.INTERVAL
+    assert work.duration_min == 1 and work.speed_mph == 6.0 and work.incline_pct == 1
+    assert easy.type == PhaseType.RECOVERY
+    assert easy.duration_min == 2 and easy.speed_mph == 4.0
+
+    # Flattening expands the block: 1 warmup + 6 rounds of 2 phases + 1 cooldown.
+    definition = parse_treadmill_log(
+        "10 min warmup at 4mph\n"
+        "6 x (1 min interval at 6mph with 1% + 2 min recovery at 4mph)\n"
+        "5 min cooldown"
+    )
+    assert len(definition.phases) == 14
+    assert definition.total_duration_min == 10 + 6 * 3 + 5
+
+
+def test_repeat_phases_are_independent_copies():
+    definition = parse_treadmill_log("3 x (2 min interval at 6mph)")
+    assert len(definition.phases) == 3
+    definition.phases[0].speed_mph = 9.9
+    assert [p.speed_mph for p in definition.phases] == [9.9, 6.0, 6.0]
+
+
+def test_repeat_block_separators_and_symbols():
+    for text in ("4 x (1 min at 6mph + 1 min at 4mph)",
+                 "4 × (1 min at 6mph, 1 min at 4mph)",
+                 "4x(1 min at 6mph + 1 min at 4mph)"):
+        assert parse_treadmill_blocks(text)[0][0] == 4
+        assert len(parse_treadmill_blocks(text)[0][1]) == 2
+
+
+def test_repeat_block_rejects_phase_without_duration():
+    with pytest.raises(ValueError):
+        parse_treadmill_log("5 x (1 min at 6mph + just jogging)")
 
 
 def test_edit_treadmill_overwrites(tmp_path):
@@ -115,6 +164,49 @@ def test_api_rejects_bad_description(tmp_path):
     client = TestClient(create_app(str(tmp_path / "t.db")))
     resp = client.post("/workouts/treadmill", json={"description": "no phases here"})
     assert resp.status_code == 422
+
+
+def test_api_parse_returns_flat_phases_and_blocks(tmp_path):
+    client = TestClient(create_app(str(tmp_path / "t.db")))
+    resp = client.post(
+        "/workouts/treadmill/parse",
+        json={"description": "10 min warmup at 4mph with 1%\n"
+                             "6 x (1 min interval at 6mph + 2 min recovery at 4mph)\n"
+                             "5 min cooldown"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # Flat view drives the analytics; the grouped view drives the dashboard's form.
+    assert len(body["phases"]) == 14
+    assert [b["repeat"] for b in body["blocks"]] == [1, 6, 1]
+    assert [p["type"] for p in body["blocks"][1]["phases"]] == ["interval", "recovery"]
+    # A cooldown with no speed stays empty, so the standard ramp is applied downstream.
+    assert body["blocks"][2]["phases"][0]["speed_mph"] is None
+
+
+def test_api_parse_rejects_bad_description_and_stores_nothing(tmp_path):
+    client = TestClient(create_app(str(tmp_path / "t.db")))
+    assert client.post("/workouts/treadmill/parse",
+                       json={"description": "no phases here"}).status_code == 422
+    assert client.get("/workouts").json() == []
+
+
+def test_repeat_session_round_trips_through_the_api(tmp_path):
+    """What the dashboard's phase builder writes must parse back to the same blocks."""
+    client = TestClient(create_app(str(tmp_path / "t.db")))
+    description = ("10 min warmup at 4mph with 1%\n"
+                   "8 x (1 min interval at 6.5mph with 1% + 90 sec recovery at 4mph with 1%)\n"
+                   "5 min cooldown with 0%")
+    saved = client.post("/workouts/treadmill",
+                        json={"description": description,
+                              "start_time": "2026-04-01T07:00:00"})
+    assert saved.status_code == 200, saved.text
+    stored = client.get(f"/workouts/{saved.json()['workout_id']}").json()["notes"]
+    assert stored == description
+    blocks = client.post("/workouts/treadmill/parse",
+                         json={"description": stored}).json()["blocks"]
+    assert [b["repeat"] for b in blocks] == [1, 8, 1]
+    assert blocks[1]["phases"][1]["duration_min"] == pytest.approx(1.5)
 
 
 def test_manual_session_not_flagged_suspect():

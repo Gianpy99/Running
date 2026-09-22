@@ -12,11 +12,15 @@ def _default_treadmill_warmup() -> list[Phase]:
     return [Phase(type=PhaseType.WARMUP, duration_min=10.0, speed_mph=4.0)]
 
 
+# The habitual walk-down at the end of every treadmill session: one minute per step.
+# A cooldown written without a speed is synthesised from exactly this ramp.
+DEFAULT_COOLDOWN_RAMP_MPH: tuple[float, ...] = (4.5, 4.0, 3.5, 3.0, 2.5)
+
+
 def _default_treadmill_cooldown() -> list[Phase]:
-    # One minute per step, walking the belt down to a stop.
     return [
         Phase(type=PhaseType.COOLDOWN, duration_min=1.0, speed_mph=mph)
-        for mph in (4.5, 4.0, 3.5, 3.0, 2.5)
+        for mph in DEFAULT_COOLDOWN_RAMP_MPH
     ]
 
 

@@ -18,7 +18,12 @@ from pydantic import BaseModel
 from ..ai import explain_session, recommend_next_session
 from ..analytics.analysis import analyse_workout
 from ..analytics.terrain import infer_terrain
-from ..ingestion import build_treadmill_workout, parse_tcx, parse_treadmill_log
+from ..ingestion import (
+    build_treadmill_workout,
+    parse_tcx,
+    parse_treadmill_blocks,
+    parse_treadmill_log,
+)
 from ..models import Athlete, RecoveryContext
 from ..persistence import open_store
 from ..persistence.store import _BaseStore
@@ -62,6 +67,12 @@ class TreadmillLogIn(BaseModel):
     start_time: datetime | None = None
     avg_hr: int | None = None
     workout_id: str | None = None  # set to overwrite an existing session (retroactive edit)
+
+
+class TreadmillParseIn(BaseModel):
+    """A description to turn into structured phases without storing anything."""
+
+    description: str
 
 
 def _recent_loads(store: _BaseStore) -> tuple[float, float, bool]:
@@ -301,6 +312,28 @@ def create_app(db_path: str | None = None) -> FastAPI:
             "duration_min": round((workout.duration_s or 0) / 60.0, 1),
             "avg_hr": workout.avg_hr,
             "phases": len([ln for ln in payload.description.splitlines() if ln.strip()]),
+        }
+
+    @app.post("/workouts/treadmill/parse")
+    def parse_treadmill(payload: TreadmillParseIn) -> dict:
+        """Structured phases for a description, so the dashboard can edit it as a form.
+
+        Read-only: nothing is stored. `blocks` keeps the repeat grouping a fartlek set is
+        written with, while `phases` is the flattened plan the analytics actually use. The
+        dashboard's phase builder round-trips through this so it always reflects exactly
+        what the canonical parser understood.
+        """
+        try:
+            blocks = parse_treadmill_blocks(payload.description)
+            definition = parse_treadmill_log(payload.description)
+        except ValueError as exc:
+            raise HTTPException(422, f"could not parse treadmill description: {exc}")
+        return {
+            "phases": [p.model_dump(mode="json") for p in definition.phases],
+            "blocks": [
+                {"repeat": repeat, "phases": [p.model_dump(mode="json") for p in steps]}
+                for repeat, steps in blocks
+            ],
         }
 
     @app.get("/workouts/{workout_id}/analysis")

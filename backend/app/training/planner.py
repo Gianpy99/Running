@@ -30,7 +30,7 @@ def adapt_definition(definition: WorkoutDefinition, readiness: ReadinessResult) 
                 Phase(type=PhaseType.WARMUP, duration_min=10, speed_mph=4.0, incline_pct=1),
                 Phase(type=PhaseType.AEROBIC, duration_min=20, speed_mph=4.5, incline_pct=1,
                       hr_target=(125, 140)),
-                Phase(type=PhaseType.COOLDOWN, duration_min=5, speed_mph=3.5, incline_pct=0),
+                Phase(type=PhaseType.COOLDOWN, duration_min=5, incline_pct=0),
             ],
         )
 
