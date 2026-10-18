@@ -18,7 +18,73 @@ running on the Pi. Jenkins polls GitHub every ~3 min and rebuilds on new commits
 > Infrastructure facts: Pi `192.168.1.129`, SSH user `g99trading`, Jenkins container
 > `ci_cd_validation_jenkins_1`. Adjust if these change.
 
+For an **existing installation**, use [Repeat deployments](#repeat-deployments) below.
+The provisioning, Jenkins restart and portal/DNS setup steps are for first-time setup,
+not an ordinary application update. A reusable Copilot agent skill is available at
+[deploy-running-coach](../.github/skills/deploy-running-coach/SKILL.md).
+
 ---
+
+## Repeat deployments
+
+### Access and current release
+
+From Windows, the confirmed account is `g99trading` (not `g99tradingbench`):
+
+```powershell
+ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=yes `
+    g99trading@192.168.1.129 'id -un; uname -m'
+
+Invoke-RestMethod http://192.168.1.129:8095/health
+```
+
+Keep the existing trusted SSH host key; do not bypass host verification. For multiline
+remote scripts, use the LF-safe transport documented in the deployment skill.
+
+Jenkins is on `http://192.168.1.129:8080`; the job is
+`http://192.168.1.129:8080/job/ai-running-coach/`. Its read-only JSON API exposes the
+build result and Git revision:
+
+```powershell
+$build = Invoke-RestMethod `
+  'http://192.168.1.129:8080/job/ai-running-coach/lastSuccessfulBuild/api/json?tree=number,result,actions[lastBuiltRevision[SHA1]]'
+$build.number
+$build.result
+$build.actions.lastBuiltRevision.SHA1
+```
+
+Use the LAN Jenkins URL rather than assuming that absolute URLs returned in build
+metadata are appropriate. If access becomes authenticated, use the operator's existing
+authorized Jenkins session; do not try to bypass authentication.
+
+### Release procedure
+
+1. Compare local/remote `main` with the successful build revision first. Jenkins may
+   already have deployed the code via SCM polling.
+2. Before changing the application/schema, preserve the current image as
+   `ai-running-coach:rollback-<successful-build-number>` and create a protected
+   server-side PostgreSQL backup. Record only paths, image IDs, revisions and counts.
+   Do not print container environments or database/API credentials.
+3. Validate relevant code changes and publish only intended files to `main`. Never
+   stage a real `.env` or paste a key into `.env.example`.
+4. Allow the existing Jenkins SCM polling (~3 minutes) to run, or use **Build with
+   Parameters** in the job. Preserve the intended AI enable/model settings.
+5. Wait for **SUCCESS for the intended revision**, then verify the running app:
+   health, PostgreSQL data counts, coaching routes/static assets and source/image
+   identity. A healthy old build is not proof that a new release succeeded.
+6. Smoke-test `/ai/coaching/preview`, not the paid generate endpoint. Display only
+   `prompt_version`, `model`, and `api_configured`; preview includes private athlete
+   context that should not be copied into logs.
+7. Verify the public route still requires family authentication where reachable.
+
+No database provisioning, re-seeding, Jenkins restart, Caddy/DNS changes or direct
+container replacement is needed for a normal release. Keep rollback images/backups;
+do not prune other apps' resources.
+
+If a release fails, retain its error evidence and use the previous validated release
+with the existing credential binding. The standard pipeline has no rollback-image
+parameter: do not assume such a switch exists. Never reset the database or restore a
+backup automatically, because that could overwrite newer workouts.
 
 ## 1. Create the database on the Pi's PostgreSQL
 
