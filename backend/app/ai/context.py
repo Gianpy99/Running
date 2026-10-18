@@ -12,10 +12,11 @@ from ..analytics.analysis import analyse_workout
 from ..models import Athlete, RecoveryContext
 from ..persistence.store import _BaseStore
 from ..services.readiness import compute_readiness
+from ..services.session_labels import describe_session, effort_label
 from .narrator import build_feature_snapshot
 from .schemas import CoachRequest, CoachingProfile
 
-PROMPT_VERSION = "coach-v2"
+PROMPT_VERSION = "coach-v3"
 INSTRUCTIONS = """You are a running-coaching assistant interpreting supplied evidence.
 Your output is advice for human review, never an instruction to a treadmill or device.
 
@@ -40,8 +41,8 @@ TIME AND PLANNING
 - Use the whole supplied race calendar and priorities, not just the nearest race.
   A=main goal, B=secondary, C=low priority/training event. Dates marked unverified,
   missing dates and targets are athlete inputs, not independently established facts.
-- If the planning horizon has passed, ask for an updated calendar/horizon. Do not
-  silently roll July or a past race into the following year.
+- If the planning horizon has passed, flag the stale calendar/horizon as uncertain.
+  Do not silently roll July or a past race into the following year.
 - Explain preparation, competing priorities, taper or post-race recovery considerations
   only when supported. Do not invent a fixed season plan or silently choose a race year.
 - Compare like with like: treadmill/outdoor, incline/terrain and main set/whole workout.
@@ -65,13 +66,26 @@ TASK: FOLLOW context.purpose, KEEP THE TWO WORKFLOWS SEPARATE
    appropriate. Prefer RPE/talk-test targets unless evidence supports numeric targets.
    An easy session must be conversational and contain no work intervals.
   Explain why this session fits now, what would change it, and the important unknowns.
-   Ask only actionable questions; do not manufacture precision from sparse evidence.
+  The athlete expects a usable single-session schedule, not an open-ended conversation.
+  For train/easy/rest, questions MUST be empty. Put ordinary pre-run recovery checks
+  and conditional stop/change guidance in the rationale/uncertainties as statements.
+  Do not end with a generic question about sleep, energy or available time already
+  supplied. Missing future recovery can justify a conservative, conditional session.
+  Use action=ask, zero duration and nonempty questions ONLY when an answer is truly
+  indispensable before any safe proposal. Ask specific, minimal questions.
 - For both workflows explain implications for stated goals and races. Prioritize the
   selected session for feedback, current evidence and recovery for next_training.
 
 CONTINUITY AND FORMAT
 - Previous coaching is unconfirmed advice, not evidence that a workout was completed.
   Actual stored workouts and current athlete reports take precedence.
+- follow_up identifies the particular saved response being revised and contains the
+  athlete's answers. Resolve those questions using fresh context and current structured
+  check-in fields. Do not ask answered questions again or copy the previous plan blindly.
+  Old readiness, dates and assumed time limits are historical, not today's check-in.
+  Never treat free-text reassurance as permission to override local safety restrictions.
+- Session labels describe structure, not physiological effort. Athlete-reported phases
+  and RPE have explicit provenance; an automatic easy label is not proof of an easy run.
 - Saved athlete_feedback belongs to its workout. Use reported RPE/notes to understand
   that session, not as proof of today's recovery. Unlike prior AI advice it is a report.
 - Respond in English using the supplied JSON schema. Rest/ask requires zero duration
@@ -93,6 +107,8 @@ def _session(store: _BaseStore, row: dict, athlete: Athlete) -> dict:
         raise ValueError("Workout disappeared while building the context.")
     if analysis is None:
         analysis = analyse_workout(workout, athlete)
+    feedback = store.get_workout_feedback(row["id"])
+    analysis = {**analysis, "session_label": describe_session(analysis, feedback)}
     return {
         "workout_id": row["id"],
         "start_time": row["start_time"],
@@ -101,7 +117,7 @@ def _session(store: _BaseStore, row: dict, athlete: Athlete) -> dict:
         "data_quality": analysis.get("data_quality", {}),
         "athlete_reported_notes": (workout.notes or "")[:4000],
         "notes_truncated": len(workout.notes or "") > 4000,
-        "athlete_feedback": store.get_workout_feedback(row["id"]),
+        "athlete_feedback": feedback,
         "analysis_version": analysis.get("analysis_version"),
     }
 
@@ -116,6 +132,23 @@ def build_context(
     next_date = request.next_session_date or today + timedelta(days=1)
     if request.purpose == "next_training" and next_date < today:
         raise ValueError("The next-session date cannot be in the past.")
+    follow_up = None
+    if request.follow_up_review_id:
+        review = store.get_coach_review(request.follow_up_review_id)
+        if review is None:
+            raise LookupError("Saved coaching response not found.")
+        if review["kind"] != request.purpose:
+            raise ValueError("A follow-up must use the same coaching workflow as the saved response.")
+        if request.purpose == "workout_feedback" and review["workout_id"] != request.workout_id:
+            raise ValueError("A feedback follow-up must refer to the original workout.")
+        if _utc(review["generated_at"]) > now:
+            raise ValueError("A future-dated coaching response cannot be used as prior advice.")
+        follow_up = {
+            "review_id": review["id"], "generated_at": review["generated_at"],
+            "previous_output_unconfirmed": review["output"],
+            "athlete_answers": request.follow_up_answers.strip(),
+            "old_recovery_not_reused": True,
+        }
     rows = store.list_workouts()
     selected = next((row for row in rows if row["id"] == request.workout_id), None)
     if selected is None and request.workout_id:
@@ -228,14 +261,17 @@ def build_context(
     if request.purpose == "workout_feedback" and selected_session:
         report = {"notes": request.notes, "perceived_exertion": request.perceived_exertion}
         selected_session["athlete_feedback"] = report
+        selected_session["features"]["session_label"]["effort"] = effort_label(request.perceived_exertion)
         for session in recent_sessions:
             if session["workout_id"] == request.workout_id:
                 session["athlete_feedback"] = report
+                session["features"]["session_label"]["effort"] = effort_label(request.perceived_exertion)
     effective_minutes = min(profile.max_session_minutes, profile.training_window_minutes())
     if request.available_minutes is not None:
         effective_minutes = min(effective_minutes, request.available_minutes)
     return {
         "purpose": request.purpose,
+        "follow_up": follow_up,
         "as_of_date": today.isoformat(),
         "evidence_through": (
             evidence_through.isoformat() if request.purpose == "workout_feedback" else today.isoformat()
@@ -275,7 +311,8 @@ def build_context(
         "races": races,
         "races_beyond_planning_horizon": excluded_races,
         "check_in": request.model_dump(
-            mode="json", exclude={"workout_id", "preview_hash"}, exclude_none=True,
+            mode="json", exclude={"workout_id", "preview_hash", "follow_up_review_id", "follow_up_answers"},
+            exclude_none=True,
         ),
         "current_recovery": recovery or None,
         "safety": {

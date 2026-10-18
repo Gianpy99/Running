@@ -37,6 +37,7 @@ from ..services.body_trends import weight_trend
 from ..services.classification import classify_session
 from ..services.pipeline import process_raw_directory, reanalyse_stored_workouts
 from ..services.readiness import compute_readiness
+from ..services.session_labels import describe_session
 from ..training.dsl import load_definition, standard_treadmill_session
 from ..training.planner import adapt_definition, generate_next_session
 from .body import register_body_routes
@@ -343,11 +344,16 @@ def create_app(db_path: str | None = None) -> FastAPI:
         with store() as s:
             analysis = s.get_analysis(workout_id)
             if analysis:
-                return analysis
+                return {**analysis, "session_label": describe_session(
+                    analysis, s.get_workout_feedback(workout_id),
+                )}
             w = s.get_workout(workout_id)
             if not w:
                 raise HTTPException(404, "workout not found")
-            return analyse_workout(w, ATHLETE)
+            analysis = analyse_workout(w, ATHLETE)
+            return {**analysis, "session_label": describe_session(
+                analysis, s.get_workout_feedback(workout_id),
+            )}
 
     @app.get("/workouts/{workout_id}/streams")
     def get_workout_streams(workout_id: str, points: int = 400) -> dict:
@@ -462,6 +468,9 @@ def create_app(db_path: str | None = None) -> FastAPI:
                 if not w:
                     raise HTTPException(404, "workout not found")
                 analysis = analyse_workout(w, ATHLETE)
+            analysis = {**analysis, "session_label": describe_session(
+                analysis, s.get_workout_feedback(workout_id),
+            )}
         return explain_session(analysis)
 
     @app.post("/ai/recommend-next-session")
@@ -617,14 +626,20 @@ def create_app(db_path: str | None = None) -> FastAPI:
             ctx = s.get_recovery(date.today())
             body = weight_trend(s.list_body_measurements())
             session_breakdown: dict[str, int] = {}
+            session_label_breakdown: dict[str, int] = {}
             per_workout = []
             for w in workouts:
                 session_breakdown[w["session_type"]] = session_breakdown.get(w["session_type"], 0) + 1
                 a = s.get_analysis(w["id"])
+                label = describe_session(
+                    a or {"session_type": w["session_type"]}, s.get_workout_feedback(w["id"]),
+                )
+                session_label_breakdown[label["code"]] = session_label_breakdown.get(label["code"], 0) + 1
                 per_workout.append({
                     "id": w["id"],
                     "start_time": w["start_time"],
                     "session_type": w["session_type"],
+                    "session_label": label,
                     "terrain": w["terrain"],
                     "distance_km": round((w["distance_m"] or 0) / 1000.0, 2),
                     "duration_min": round((w["duration_s"] or 0) / 60.0, 1),
@@ -650,6 +665,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
                 "duration_h": round(total_duration / 60.0, 1),
             },
             "session_breakdown": session_breakdown,
+            "session_label_breakdown": session_label_breakdown,
             "readiness": {"level": readiness.level.value, "score": readiness.score,
                           "reasons": readiness.reasons, "recommendation": readiness.recommendation},
             "training_load": {"load_7d": round(load_7, 1), "load_28d": round(load_28, 1),

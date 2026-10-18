@@ -66,6 +66,10 @@ def validate_advice(output: CoachOutput, context: dict) -> None:
         return
     if plan is None:
         raise ValueError("Next-training preparation requires a proposal or clarification.")
+    if plan.action == "ask" and not output.questions:
+        raise ValueError("Clarification must identify the indispensable questions.")
+    if plan.action != "ask" and output.questions:
+        raise ValueError("A training/rest proposal must not end with unanswered questions.")
     if plan.action not in context["safety"]["allowed_actions"]:
         raise ValueError("The proposal conflicts with the local recovery/safety restrictions.")
     if plan.date.isoformat() != context["next_session_date"]:
@@ -142,6 +146,7 @@ def request_coaching(context: dict, model: str) -> dict:
     return {
         "id": review_id(context, model),
         "kind": context["purpose"],
+        "revises_review_id": context["follow_up"]["review_id"] if context.get("follow_up") else None,
         "workout_id": selected["workout_id"] if selected else None,
         "prompt_version": PROMPT_VERSION,
         "requested_model": model, "model": actual_model,

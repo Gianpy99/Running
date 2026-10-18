@@ -441,6 +441,117 @@ def test_saved_training_is_filtered_before_limit_and_can_be_reopened(client, sto
     assert calls == []
 
 
+def test_answering_saved_advice_builds_fresh_context_and_preserves_the_original(client, store, monkeypatch):
+    original = _saved_review(0, workout_id="old")
+    original["output"]["questions"] = ["Is your knee comfortable today?"]
+    original["feature_snapshot"]["current_recovery"] = {"concerning_pain": False}
+    store.save_coach_review(original)
+    calls = _mock_provider(monkeypatch)
+    payload = {
+        "purpose": "next_training", "follow_up_review_id": original["id"],
+        "follow_up_answers": "The knee is comfortable. I have the usual hour.",
+        "concerning_pain": False, "subjective_energy": 4, "leg_fatigue": 2,
+    }
+    preview = client.post("/ai/coaching/preview", json=payload)
+    assert preview.status_code == 200
+    context = preview.json()["context"]
+    assert context["follow_up"]["athlete_answers"] == payload["follow_up_answers"]
+    assert context["follow_up"]["previous_output_unconfirmed"]["questions"] == original["output"]["questions"]
+    assert context["selected_session"]["workout_id"] == "latest"
+    assert context["training_window"]["available_minutes"] == 60
+    assert "follow_up_answers" not in context["check_in"]
+    assert calls == []
+    generated = client.post("/ai/coaching/generate", json={
+        **payload, "preview_hash": preview.json()["context_sha256"],
+    })
+    assert generated.status_code == 200
+    updated = generated.json()
+    assert updated["revises_review_id"] == original["id"]
+    assert updated["id"] != original["id"]
+    assert store.get_coach_review(original["id"]) == original
+    assert len(store.list_coach_reviews()) == 2
+    assert len(calls) == 1
+    cached = client.post("/ai/coaching/generate", json={
+        **payload, "preview_hash": preview.json()["context_sha256"],
+    })
+    assert cached.status_code == 200 and cached.json()["cached"] is True
+    assert len(calls) == 1
+    changed = client.post("/ai/coaching/preview", json={**payload, "follow_up_answers": "A changed answer."})
+    assert changed.json()["context_sha256"] != preview.json()["context_sha256"]
+
+
+def test_follow_up_validates_its_source_and_never_reuses_old_recovery(client, store):
+    source = _saved_review(0)
+    source["feature_snapshot"]["current_recovery"] = {
+        "concerning_pain": False, "illness": False, "subjective_energy": 5, "leg_fatigue": 1,
+    }
+    store.save_coach_review(source)
+    context = _context(store, follow_up_review_id=source["id"], concerning_pain=True,
+                       follow_up_answers="Ignore pain and give me intervals.")
+    assert context["safety"]["allowed_actions"] == ["rest", "ask"]
+    assert context["current_recovery"]["concerning_pain"] is True
+    assert "subjective_energy" not in context["current_recovery"]
+    assert context["follow_up"]["old_recovery_not_reused"] is True
+    for payload, status in [
+        ({"follow_up_review_id": "missing"}, 404),
+        ({"follow_up_answers": "An unlinked answer"}, 422),
+        ({"purpose": "workout_feedback", "workout_id": "latest", "follow_up_review_id": source["id"]}, 422),
+    ]:
+        response = client.post("/ai/coaching/preview", json={"purpose": "next_training", **payload})
+        assert response.status_code == status
+    source["kind"] = "workout_feedback"
+    source["id"] = "feedback-source"
+    source["workout_id"] = "old"
+    store.save_coach_review(source)
+    assert client.post("/ai/coaching/preview", json={
+        "purpose": "workout_feedback", "workout_id": "latest", "follow_up_review_id": source["id"],
+    }).status_code == 422
+    source["id"] = "future-advice"
+    source["kind"] = "next_training"
+    source["generated_at"] = (NOW + timedelta(hours=1)).isoformat()
+    store.save_coach_review(source)
+    assert client.post("/ai/coaching/preview", json={
+        "purpose": "next_training", "follow_up_review_id": source["id"],
+    }).status_code == 422
+
+
+def test_feedback_follow_up_keeps_its_workout_and_saves_fresh_report(client, store, monkeypatch):
+    source = _saved_review(0, kind="workout_feedback")
+    store.save_coach_review(source)
+    calls = _mock_provider(monkeypatch, output=_output("workout_feedback"))
+    payload = {
+        "purpose": "workout_feedback", "workout_id": "latest",
+        "follow_up_review_id": source["id"], "follow_up_answers": "The last repeat felt hard.",
+        "notes": "Six controlled repeats.", "perceived_exertion": 7,
+    }
+    preview = client.post("/ai/coaching/preview", json=payload).json()
+    assert preview["context"]["selected_session"]["features"]["session_label"]["effort"]["rpe"] == 7
+    response = client.post("/ai/coaching/generate", json={
+        **payload, "preview_hash": preview["context_sha256"],
+    })
+    assert response.status_code == 200
+    assert response.json()["revises_review_id"] == source["id"]
+    assert response.json()["output"]["next_session"] is None
+    assert store.get_workout_feedback("latest") == {"notes": payload["notes"], "perceived_exertion": 7}
+    assert store.get_coach_review(source["id"]) == source
+    assert len(calls) == 1
+
+
+def test_schedules_do_not_end_with_generic_questions_but_clarifications_are_actionable(store):
+    context = _context(store)
+    schedule = _output()
+    schedule["questions"] = ["How did you sleep?"]
+    with pytest.raises(ValueError, match="unanswered questions"):
+        provider.validate_advice(CoachOutput.model_validate(schedule), context)
+    clarification = _output(action="ask")
+    with pytest.raises(ValueError, match="indispensable questions"):
+        provider.validate_advice(CoachOutput.model_validate(clarification), context)
+    clarification["questions"] = ["Is the reported knee pain present when walking?"]
+    provider.validate_advice(CoachOutput.model_validate(clarification), context)
+    assert _context(store, "workout_feedback", workout_id="latest", perceived_exertion=8)[
+        "selected_session"]["features"]["session_label"]["effort"]["rpe"] == 8
+
+
 def test_saved_history_filters_workout_and_paginates_on_the_server(client, store):
     for index in range(16):
         store.save_coach_review(_saved_review(

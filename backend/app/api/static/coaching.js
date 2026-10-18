@@ -1,7 +1,6 @@
 // Coaching stays opt-in: previews and viewing saved advice never call OpenAI.
 function coachEscape(value) {
-  return String(value ?? '').replace(/[&<>"']/g, c =>
-    ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
+  return escapeHtml(value);
 }
 
 async function coachFetch(url, method='GET', data) {
@@ -222,7 +221,10 @@ function renderCoaching(review) {
     <p class="coach-output">${coachEscape(output.analysis)}</p>
     ${list('Observations', output.observations)}
     ${list('Race implications', output.race_implications)}
-    ${list('Uncertainties', output.uncertainties)}${list('Questions', output.questions)}
+    ${list('Uncertainties', output.uncertainties)}
+    ${list(plan?.action === 'ask' ? 'Clarification needed before a schedule' : 'Questions from this saved response', output.questions)}
+    ${output.questions?.length ? `<p class="hint">This is saved advice, not a live chat. Use the update button below
+      to answer questions and supply a fresh check-in. Nothing is sent to the AI until you preview and explicitly ask.</p>` : ''}
     </article>`;
 }
 
@@ -230,9 +232,17 @@ function showCoachingReview(content, review, onBack) {
   const title = review.kind === 'next_training' ? 'Saved next-training advice' : 'Saved workout feedback';
   document.getElementById('coachDialogTitle').textContent = title;
   content.innerHTML = `<div class="coach-actions"><button type="button" class="upload-btn" id="coachBackToSaved">
-    Back to saved coaching</button></div>${renderCoaching(review)}
+    Back to saved coaching</button><button type="button" class="upload-btn" id="coachUpdateAdvice">
+    ${review.kind === 'next_training' ? 'Update this training' : 'Add details / update feedback'}</button></div>
+    <p class="hint">The original stays saved. Updating uses the latest context and your current time window,
+      not the old response's assumptions or recovery snapshot.</p>${renderCoaching(review)}
+    ${review.output.questions?.length ? `<button type="button" class="upload-btn" id="coachAnswerQuestions">
+      Answer questions &amp; update advice</button>` : ''}
     <button type="button" class="upload-btn" id="coachReaderTop">Back to top</button>`;
   content.querySelector('#coachBackToSaved').addEventListener('click', onBack);
+  const update = () => openCoach(review.kind, review.workout_id, review);
+  content.querySelector('#coachUpdateAdvice').addEventListener('click', update);
+  content.querySelector('#coachAnswerQuestions')?.addEventListener('click', update);
   content.querySelector('#coachReaderTop').addEventListener('click', () => { content.scrollTop = 0; });
   content.scrollTop = 0;
   content.focus({preventScroll: true});
@@ -296,7 +306,7 @@ async function openSavedCoaching(kind='next_training', workoutId=null, offset=0)
   } catch (error) { history.textContent = ''; coachStatus(status, error.message, true); }
 }
 
-async function openCoach(purpose='next_training', workoutId=null) {
+async function openCoach(purpose='next_training', workoutId=null, followUp=null) {
   const content = coachModal('AI coaching');
   try {
     const [workouts, profile] = await Promise.all([
@@ -308,7 +318,18 @@ async function openCoach(purpose='next_training', workoutId=null) {
       It cannot read your existing ChatGPT chat.</p>
       <div class="coach-actions"><button type="button" class="upload-btn" id="coachOpenSaved">
         Open saved coaching</button><span class="hint">API responses are saved automatically for later.</span></div>
+      ${followUp ? `<section class="narrative"><h3>Update saved advice</h3>
+        <p class="hint">Saved ${coachEscape(new Date(followUp.generated_at).toLocaleString())}.
+          Your original response will not be overwritten. This is a new, explicitly requested revision,
+          not an automatic chat reply. Preview/copy is free; a new API answer may incur a charge.</p>
+        ${followUp.output.questions?.length ? `<h4>Questions to resolve</h4><ul>${followUp.output.questions.map(q =>
+          `<li>${coachEscape(q)}</li>`).join('')}</ul>` : ''}
+        <button type="button" class="tm-link" id="coachStartFresh">Start a separate request instead</button></section>` : ''}
       <form id="coachRequestForm" class="coach-form">
+        ${followUp ? `<label>Your answers / what has changed
+          <textarea name="follow_up_answers" maxlength="4000" placeholder="Answer the questions or explain what should change."></textarea></label>
+          <p class="hint">Enter today's sleep, energy, fatigue, illness and pain in the structured check-in below
+            when preparing training. Old check-in answers and old time limits are deliberately not copied.</p>` : ''}
         <label>What would you like to do?<select name="purpose">
           <option value="workout_feedback">Feedback on a completed workout</option>
           <option value="next_training">Prepare my next training</option></select></label>
@@ -370,8 +391,24 @@ async function openCoach(purpose='next_training', workoutId=null) {
     let previewPayload = null;
     let previewHash = null;
     let revision = 0;
+    let reportSequence = 0;
+    let reportLoading = false;
     form.elements.purpose.value = purpose;
     if (workoutId) form.elements.workout_id.value = workoutId;
+    if (followUp) {
+      form.elements.purpose.disabled = true;
+      content.querySelector('#coachStartFresh').addEventListener('click', () => openCoach(purpose, workoutId));
+      if (purpose === 'next_training') {
+        const parts = Object.fromEntries(new Intl.DateTimeFormat('en', {
+          timeZone: profile.timezone, year:'numeric', month:'2-digit', day:'2-digit'
+        }).formatToParts(new Date()).map(part => [part.type, part.value]));
+        const today = `${parts.year}-${parts.month}-${parts.day}`;
+        const previousDate = followUp.output.next_session?.date;
+        if (previousDate && previousDate >= today) form.elements.next_session_date.value = previousDate;
+        else if (previousDate) coachStatus(status, 'The original training date has passed. Select a new date, or leave blank for tomorrow.');
+        form.elements.setting.value = followUp.feature_snapshot.check_in?.setting || 'either';
+      }
+    }
     function changeMode() {
       const feedback = form.elements.purpose.value === 'workout_feedback';
       content.querySelector('#coachWorkoutLabel').hidden = !feedback;
@@ -379,13 +416,18 @@ async function openCoach(purpose='next_training', workoutId=null) {
       content.querySelector('#coachNotesLabel').hidden = !feedback;
       content.querySelector('#coachSaveReport').hidden = !feedback;
       content.querySelector('#coachPreparation').hidden = feedback;
-      form.elements.workout_id.disabled = !feedback;
+      form.elements.workout_id.disabled = !feedback || Boolean(followUp);
       form.elements.perceived_exertion.disabled = !feedback;
       form.elements.notes.disabled = !feedback;
       content.querySelectorAll('#coachPreparation input, #coachPreparation select, #coachPreparation textarea')
         .forEach(input => { input.disabled = feedback; });
       form.elements.workout_id.required = feedback;
       if (feedback) loadReport();
+      else {
+        reportSequence += 1; reportLoading = false;
+        form.querySelector('button[type=submit]').disabled = false;
+        content.querySelector('#coachSaveReport').disabled = false;
+      }
     }
     function invalidate() {
       revision += 1;
@@ -402,17 +444,33 @@ async function openCoach(purpose='next_training', workoutId=null) {
     async function loadReport() {
       const id = form.elements.workout_id.value;
       if (!id) return;
-      const startedRevision = revision;
+      const sequence = ++reportSequence;
+      const initialNotes = form.elements.notes.value;
+      const initialRpe = form.elements.perceived_exertion.value;
+      reportLoading = true;
+      form.querySelector('button[type=submit]').disabled = true;
+      content.querySelector('#coachSaveReport').disabled = true;
       try {
         const saved = await coachFetch(`/workouts/${encodeURIComponent(id)}/feedback`);
-        if (!content.isConnected || revision !== startedRevision ||
+        if (!content.isConnected || sequence !== reportSequence ||
             form.elements.purpose.value !== 'workout_feedback' ||
             form.elements.workout_id.value !== id) return;
-        form.elements.notes.value = saved.feedback?.notes || '';
-        form.elements.perceived_exertion.value = saved.feedback?.perceived_exertion ?? '';
+        if (form.elements.notes.value === initialNotes) form.elements.notes.value = saved.feedback?.notes || '';
+        if (form.elements.perceived_exertion.value === initialRpe) {
+          form.elements.perceived_exertion.value = saved.feedback?.perceived_exertion ?? '';
+        }
+        invalidate();
       } catch (error) { coachStatus(status, error.message, true); }
+      finally {
+        if (sequence === reportSequence && content.isConnected) {
+          reportLoading = false;
+          form.querySelector('button[type=submit]').disabled = false;
+          content.querySelector('#coachSaveReport').disabled = false;
+        }
+      }
     }
     content.querySelector('#coachSaveReport').addEventListener('click', async event => {
+      if (reportLoading) { coachStatus(status, 'Wait for the saved workout report to load.', true); return; }
       if (!form.reportValidity()) return;
       const button = event.target;
       button.disabled = true;
@@ -422,23 +480,29 @@ async function openCoach(purpose='next_training', workoutId=null) {
           'PUT', {notes: form.elements.notes.value, perceived_exertion: rpe ? Number(rpe) : null});
         invalidate();
         coachStatus(status, 'Workout notes/RPE saved and available for next-training preparation.');
+        await init();
       } catch (error) { coachStatus(status, error.message, true); }
       finally { button.disabled = false; }
     });
     changeMode();
     form.addEventListener('submit', async event => {
       event.preventDefault();
+      if (reportLoading) { coachStatus(status, 'Wait for the saved workout report to load.', true); return; }
       const button = form.querySelector('button[type=submit]');
       button.disabled = true; generate.disabled = true; copy.disabled = true;
       const startedRevision = revision;
       try {
         const fields = Object.fromEntries(new FormData(form));
         const payload = {
-          purpose: fields.purpose,
-          notes: fields.purpose === 'workout_feedback' ? fields.notes : fields.preparation_notes
+          purpose: form.elements.purpose.value,
+          notes: form.elements.purpose.value === 'workout_feedback' ? fields.notes : fields.preparation_notes
         };
-        if (fields.purpose === 'workout_feedback') {
-          payload.workout_id = fields.workout_id;
+        if (followUp) {
+          payload.follow_up_review_id = followUp.id;
+          payload.follow_up_answers = fields.follow_up_answers;
+        }
+        if (payload.purpose === 'workout_feedback') {
+          payload.workout_id = form.elements.workout_id.value;
           if (fields.perceived_exertion) payload.perceived_exertion = Number(fields.perceived_exertion);
         } else {
           payload.setting = fields.setting;
@@ -489,6 +553,7 @@ async function openCoach(purpose='next_training', workoutId=null) {
       try {
         const review = await coachFetch('/ai/coaching/generate', 'POST',
           {...previewPayload, preview_hash: previewHash});
+        if (review.kind === 'workout_feedback') await init();
         if (!content.isConnected) return;
         const reader = coachModal('Saved coaching response');
         showCoachingReview(reader, review, () => openSavedCoaching(

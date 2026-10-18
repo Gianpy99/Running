@@ -6,7 +6,9 @@ import hashlib
 import json
 from datetime import datetime, timezone
 
-PROMPT_VERSION = "narrator-v0"
+from ..services.session_labels import describe_session
+
+PROMPT_VERSION = "narrator-v1"
 
 
 def build_feature_snapshot(analysis: dict) -> dict:
@@ -14,6 +16,7 @@ def build_feature_snapshot(analysis: dict) -> dict:
     m = analysis.get("metrics", {})
     return {
         "session_type": analysis.get("session_type"),
+        "session_label": analysis.get("session_label") or describe_session(analysis),
         "terrain": analysis.get("terrain"),
         "completion": analysis.get("completion"),
         "distance_km": round((m.get("distance_m") or 0) / 1000.0, 2),
@@ -55,11 +58,13 @@ def explain_session(analysis: dict) -> dict:
     """Produce a structured session narrative from evidence (PRD §12, §26)."""
     snap = build_feature_snapshot(analysis)
     parts = [
-        f"{snap['session_type']} session on {snap['terrain']} terrain: "
+        f"{snap['session_label']['label']} session on {snap['terrain']} terrain: "
         f"{snap['distance_km']} km in {snap['duration_min']} min "
         f"(avg pace {_pace_str(snap['avg_pace_s_per_km'])}, avg HR "
         f"{snap['avg_hr'] if snap['avg_hr'] else 'n/a'} bpm)."
     ]
+    if snap["session_label"]["source"] == "athlete_reported_structure":
+        parts.append(snap["session_label"]["detail"])
     main = snap.get("main_set", {})
     if main.get("available") and main.get("avg_pace_s_per_km"):
         # The headline pace above includes the easy ends; quote the work on its own so a

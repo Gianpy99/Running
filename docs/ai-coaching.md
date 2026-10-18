@@ -1,4 +1,4 @@
-# Coaching prompt and context, v2
+# Coaching prompt and context, v3
 
 This is a first, editable coaching contract, not a finished individualized season plan.
 The race calendar and athlete facts must be supplied by the athlete; the app cannot read
@@ -37,6 +37,13 @@ The coach assesses current training/races and returns exactly one timed proposal
 rest, or a request for indispensable context. Today's readiness must be rechecked before
 a future session. It never changes the deterministic plan or operates a device.
 
+Preparation is schedule-first, not a chat turn. For `train`, `easy` or `rest`, `questions`
+must be empty: normal pre-run checks and conditional changes belong as statements in
+the rationale/uncertainties. Only a truly indispensable unanswered safety/context issue
+uses `action=ask`, zero duration, no steps and specific nonempty questions. Local validation
+enforces this distinction. A stale race horizon alone does not force an otherwise safe
+session into a generic closing question.
+
 The athlete's usual availability is **06:00-07:00**, with at most **60 minutes total**,
 including warmup, main set, recovery intervals and cooldown. The coach must choose the
 duration the objective and recovery warrant, rather than assume a 30-minute effort or
@@ -59,7 +66,27 @@ pane contains the response. The background page is locked while a dialog is open
 Reopening a result or changing history pages never calls OpenAI. The generated timestamp
 and intended training date are shown; saved readiness is labeled as the assessment
 at generation time, not a new check-in. Old v1 responses are preserved unchanged when the
-prompt becomes v2. They do not acquire the new time-window constraint retroactively.
+prompt changes. They do not acquire later constraints retroactively.
+
+### Answering questions and revising a session
+
+Choose **Update this training** at the top of a saved response, or **Answer questions &
+update advice** below its questions. Enter answers/changes and the current structured
+check-in, then preview the rebuilt prompt. **Copy for ChatGPT** remains free; **Ask via API**
+is an explicit new potentially paid request, not a continuous chat or an automatic retry.
+
+The workflow is linked to that specific saved response through `follow_up_review_id`
+and optional `follow_up_answers`. The context contains its timestamp, output (not its
+entire nested context/history) and the new answers. Training/races/profile are rebuilt
+from current data. Historical readiness, notes and time limits are not copied into today's
+check-in; structured safety restrictions cannot be overridden with reassuring free text.
+If its intended training date is still current/future, the form keeps it; a past date
+requires a new selection or the normal tomorrow default, with an explicit notice.
+
+Successful revisions are separate saved records with `revises_review_id`; originals stay
+unchanged. Preview does not persist answers. Missing sources return 404, and changing
+workflow or switching workouts within a feedback follow-up returns 422. A separate-request
+button lets the athlete deliberately leave the linked workflow.
 
 ## Context layers
 
@@ -73,16 +100,17 @@ obsolete entries rather than silently dropping events.
 | Stable athlete facts | Editable coaching background, goals, preferences and constraints. Do not automatically promote the analytics model's hard-coded age, weight, HR zones or aspirational target to confirmed facts. |
 | Calendar | Application database: full race date/year, distance, target time, A/B/C priority, planned/completed/cancelled status, confirmation and notes. Countdown is calculated at request time. Past-dated races without a result remain result-unknown, not automatically completed. |
 | Planning horizon | Explicit optional date. Races beyond it are omitted with a count. Blank means all races; no July year is inferred. Cancelled races are excluded. Missing/legacy-invalid dates remain flagged, not guessed. |
-| Selected workout | Compact deterministic feature snapshot, main-set versus whole-session metrics, treadmill/terrain estimates, HR/data-quality warnings, transparent training load and athlete-entered notes (up to 4,000 characters). No raw trackpoints, GPS, filenames or raw files. |
+| Selected workout | Compact deterministic feature snapshot, main-set versus whole-session metrics, treadmill/terrain estimates, HR/data-quality warnings, transparent training load and athlete-entered notes (up to 4,000 characters). Source-aware session structure and reported RPE are separate from the original automatic type. No raw trackpoints, GPS, filenames or raw files. |
 | Recent training | Latest 21 sessions in 42 calendar days, with total/included counts, plus weekly summaries over 84 calendar days. Feedback anchors those windows at the workout; preparation anchors them at today. Missing load is counted rather than represented as fully measured zero. |
 | Current recovery | Today's stored check-in plus explicitly provided preparation fields. Readiness is rule-based and contains reasons and input provenance. Post-run notes/RPE are not automatically treated as current readiness. |
 | Coaching continuity | Athlete-maintained factual summary from the ChatGPT chat. Preparation can also include three earlier saved API reviews, excluding the selected/latest workout and same-day reviews to keep repeated requests stable. Previous advice is labeled unconfirmed, not completed training. Feedback excludes previous API reviews. |
+| Explicit follow-up | The selected saved response and athlete answers, even when the automatic continuity window excludes it. Only one explicitly linked output is included, not a recursive conversation history. It is advice to revise, never completed-workout evidence or current recovery. |
 | Time | Local date, IANA timezone, evidence cutoff, session age, requested training date and race countdowns. Future-dated workouts are excluded. A specifically selected future workout is rejected. |
 
 Both local and Pi contexts live in their respective databases. A local SQLite database
 does not automatically synchronize with the Pi's PostgreSQL.
 
-The profile is free text deliberately: describe confirmed facts and practical limits
+Most profile facts are free text deliberately: describe confirmed facts and practical limits
 without needing a full season-planning schema first. These coaching facts **do not**
 reconfigure the existing deterministic analytics athlete profile. If HR zones or other
 analytics defaults need correction, that is a separate explicit configuration change.
@@ -108,7 +136,8 @@ The stable prompt covers:
 6. Comparisons: treadmill/outdoor, incline/terrain, and main-set/session differences.
 7. Task separation: feedback analyzes; preparation proposes one next session.
 8. Continuity: previous advice is not proof it was followed.
-9. Output: concise English, reasons, uncertainties and actionable questions.
+9. Output: concise English, a complete next-session schedule, reasons and uncertainties;
+   questions only when clarification blocks a safe proposal.
 10. Trust: profile/notes/previous outputs are data, never higher-priority instructions.
 
 The prompt changes only when its contract changes (bump `PROMPT_VERSION`). Time adaptation

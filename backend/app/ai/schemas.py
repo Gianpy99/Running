@@ -85,12 +85,16 @@ class CoachRequest(WorkoutFeedback):
     leg_fatigue: int | None = Field(default=None, ge=1, le=5)
     illness: bool | None = None
     concerning_pain: bool | None = None
+    follow_up_review_id: str | None = Field(default=None, min_length=1, max_length=200)
+    follow_up_answers: str = Field(default="", max_length=4000)
     preview_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def feedback_requires_workout(self) -> CoachRequest:
         if self.purpose == "workout_feedback" and not self.workout_id:
             raise ValueError("Select a workout for feedback.")
+        if self.follow_up_answers.strip() and not self.follow_up_review_id:
+            raise ValueError("Select the saved coaching response these answers refer to.")
         return self
 
 

@@ -50,6 +50,20 @@
   tbody tr:hover { background: var(--panel2); }
   .type { font-size: .72rem; padding: .1rem .5rem; border-radius: 6px; background: var(--panel2);
           color: var(--muted); }
+  .session-label { display: inline-flex; flex-direction: column; gap: .3rem; min-width: 154px; }
+  .session-badge { display: inline-flex; align-items: center; gap: .45rem; align-self: flex-start;
+      padding: .3rem .6rem; border: 1px solid var(--session-color); border-radius: 8px;
+      color: var(--session-color); background: var(--panel2); font-size: .78rem; font-weight: 650;
+      background: color-mix(in srgb, var(--session-color) 12%, var(--panel)); }
+  .session-icon { width: 17px; height: 17px; flex-shrink: 0; fill: none;
+      stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .session-source { color: var(--muted); font-size: .65rem; font-weight: 400; }
+  .session-effort { display: flex; align-items: center; gap: .4rem; font-size: .7rem;
+      font-weight: 400; color: var(--muted); white-space: nowrap; }
+  .effort-bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; }
+  .effort-bars i { width: 3px; border-radius: 1px; background: var(--line); }
+  .effort-bars i.on { background: var(--effort-color); }
+  .session-heading { display: flex; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
   .warn { color: var(--amber); }
   .reasons { margin: .4rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: .82rem; }
   /* modal */
@@ -181,9 +195,49 @@
 const S_COLORS = {
   easy: '#35c46b', recovery: '#4fd0c5', progression: '#3fb6ff', fartlek: '#b07cff',
   interval: '#f2b134', benchmark: '#ef5350', family_fun: '#ff8fb0', incomplete: '#8ba0b3',
-  unclassified: '#5a6b7a'
+  unclassified: '#a4b6c6', steady: '#79bfff'
+};
+const SESSION_NAMES = {
+  easy:'Easy run', recovery:'Recovery', progression:'Progression', fartlek:'Fartlek',
+  interval:'Intervals', benchmark:'Benchmark', family_fun:'Family run',
+  incomplete:'Incomplete', unclassified:'Unclassified', steady:'Steady run'
 };
 const charts = {};
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
+}
+
+function sessionBadge(label, detectedType) {
+  const code = label?.code || detectedType;
+  const icons = {
+    easy:'M5 17C3 7 9 3 19 4c1 10-3 15-11 14M5 20 15 9',
+    recovery:'M5 8a8 8 0 1 1-1 8M5 3v5h5',
+    steady:'M3 7h18M3 12h18M3 17h18',
+    progression:'m3 18 6-6 4 2 8-10M15 4h6v6',
+    interval:'M4 19V9h4v10M10 19V4h4v15M16 19V9h4v10',
+    fartlek:'m2 16 4-8 4 10 4-14 4 11 4-6',
+    benchmark:'M5 21V3m0 1h14l-3 4 3 4H5',
+    family_fun:'M8 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6M2 20v-3a6 6 0 0 1 12 0v3M16 6a3 3 0 0 1 0 6m2 3a5 5 0 0 1 4 5',
+    incomplete:'M8 4v16M16 4v16',
+    unclassified:'M9 7a3 3 0 1 1 4 3c-1 1-1 2-1 3m0 4v1'
+  };
+  const effort = label?.effort;
+  const level = effort?.level || 0;
+  const effortColor = ['#8ba0b3','#35c46b','#4fd0c5','#f2b134','#ff9966','#ef5350'][level];
+  const effortText = effort?.rpe != null ? `RPE ${effort.rpe}/10 · ${effort.label}` : 'Effort not logged';
+  const source = label?.source === 'athlete_reported_structure' ? 'Reported structure' : 'Auto estimate';
+  return `<span class="session-label" title="${escapeHtml(label?.detail || 'Automatic type, not measured effort.')}">
+    <span class="session-badge" style="--session-color:${S_COLORS[code] || S_COLORS.unclassified}">
+      <svg class="session-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="${icons[code] || icons.unclassified}"></path></svg>
+      ${escapeHtml(label?.label || SESSION_NAMES[code] || 'Unclassified')}</span>
+    <span class="session-source">${source}</span>
+    <span class="session-effort" style="--effort-color:${effortColor}">
+      <span class="effort-bars" aria-hidden="true">${[1,2,3,4,5].map(n =>
+        `<i class="${n <= level ? 'on' : ''}" style="height:${n * 2 + 2}px"></i>`).join('')}</span>
+      ${escapeHtml(effortText)}</span></span>`;
+}
 
 function fmtPace(s) {
   if (!s) return '—';
@@ -255,7 +309,7 @@ function workoutsTable(w) {
   const rows = w.slice().reverse().map(x => `
     <tr data-id="${x.id}">
       <td>${fmtDate(x.start_time)}</td>
-      <td><span class="type" style="color:${S_COLORS[x.session_type]||'#8ba0b3'}">${x.session_type}</span></td>
+      <td>${sessionBadge(x.session_label, x.session_type)}</td>
       <td>${x.terrain.replace('_',' ')}</td>
       <td>${x.distance_km}</td>
       <td>${x.duration_min}</td>
@@ -265,9 +319,10 @@ function workoutsTable(w) {
       <td>${x.hr_suspect_fraction > 0.1 ? `<span class="warn">${Math.round(x.hr_suspect_fraction*100)}%</span>` : '—'}</td>
     </tr>`).join('');
   return `<div class="panel wide" style="margin-top:1.1rem">
-    <h2>All sessions</h2><p class="hint">click a row for splits, HR, elevation, the local summary and workout feedback</p>
+    <h2>All sessions</h2><p class="hint">Type describes structure, not effort. Reported phases take precedence over a generic easy estimate.
+      Click a row for details; log RPE in workout feedback to show how hard it felt (no API call needed).</p>
     <div style="overflow:auto; max-height:420px">
-    <table><thead><tr><th>Date</th><th>Type</th><th>Terrain</th><th>km</th><th>min</th>
+    <table><thead><tr><th>Date</th><th>Session / effort</th><th>Terrain</th><th>km</th><th>min</th>
       <th>HR</th><th>Pace</th><th>Main set</th><th>HR flags</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 
@@ -308,11 +363,11 @@ function drawCharts(d) {
       borderColor:'#f2b134', borderDash:[6,4], tension:.3, spanGaps:false, pointRadius:2 }] : []),
   ], { yTitle:'bpm' });
   // mix doughnut
-  const mix = d.session_breakdown;
+  const mix = d.session_label_breakdown || d.session_breakdown;
   if (charts.c_mix) charts.c_mix.destroy();
   charts.c_mix = new Chart(document.getElementById('c_mix'), {
     type:'doughnut',
-    data:{ labels:Object.keys(mix), datasets:[{ data:Object.values(mix),
+    data:{ labels:Object.keys(mix).map(k=>SESSION_NAMES[k] || k), datasets:[{ data:Object.values(mix),
       backgroundColor:Object.keys(mix).map(k=>S_COLORS[k]||'#5a6b7a') }] },
     options:{ plugins:{ legend:{ position:'right', labels:{ color:'#8ba0b3', boxWidth:12 } } } }
   });
@@ -333,7 +388,8 @@ async function openWorkout(id) {
     const eq = analysis.equivalent_flat_pace;
     const ms = analysis.metrics_main_set;
     modal.innerHTML = `<button class="close" onclick="closeModal()">×</button>
-      <h3>${analysis.session_type} · ${analysis.terrain.replace('_',' ')}</h3>
+      <h3 class="session-heading">${sessionBadge(analysis.session_label, analysis.session_type)}
+        <span>${escapeHtml(analysis.terrain.replace('_',' '))}</span></h3>
       <div class="hint" style="color:var(--muted)">${new Date(analysis.start_time).toLocaleString()}</div>
       ${analysis.terrain === 'treadmill' ? `<button class="upload-btn" style="margin:.4rem 0" onclick="editTreadmill('${id}')">✏️ Edit treadmill</button>` : ''}
       <button class="upload-btn" style="margin:.4rem 0 .4rem .4rem;background:var(--red);color:#fff" onclick="deleteWorkout('${id}')">🗑 Delete</button>

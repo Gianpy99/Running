@@ -66,6 +66,25 @@ all races. Default athlete values used by analytics are not treated as confirmed
   session**, including warmup, recovery intervals and cooldown. The coach chooses the
   duration needed, not a fixed 30-minute run. Set a shorter per-request limit when needed;
   morning window/maximum settings are editable under **Coach setup & races**.
+- Next-training preparation returns one usable schedule (or rest), without a generic
+  closing question. Questions are reserved for indispensable clarifications that prevent
+  a safe proposal. In **Saved coaching**, choose **Update this training** or **Answer
+  questions & update advice**, enter your answers and a fresh check-in, then preview.
+  Copying is free; generating a revised API response is a new explicit paid request.
+  The original remains saved alongside its revision.
+
+### Session badges and effort
+
+The sessions table uses distinct icon/colour badges, readable names, and provenance.
+Reported treadmill interval/progression/aerobic phases can replace a generic automatic
+"easy" presentation. This describes structure, not physiological intensity: the canonical
+classification, training-load accounting and historical analyses are not rewritten.
+
+Effort is shown separately as **reported RPE 1-10**, with a five-level indicator.
+No RPE means **Effort not logged**, not "easy"; HR or pace alone does not manufacture
+an effort score. Open a workout's feedback form and **Save workout notes & RPE** to log
+effort without an AI call. Table badges, workout details and the session-mix chart agree;
+AI context identifies both the reported structure and the original automatic type.
 
 See [the prompt/context design](docs/ai-coaching.md) for the evidence windows, safety
 rules, provenance, limitations and refinement checklist.
