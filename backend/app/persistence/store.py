@@ -420,6 +420,7 @@ class _BaseStore:
     def list_coach_reviews(
         self, limit: int = 10, exclude_workout_id: str | None = None,
         workout_id: str | None = None, generated_before: str | None = None,
+        kind: str | None = None, offset: int = 0,
     ) -> list[dict]:
         clauses: list[str] = []
         params: tuple = ()
@@ -432,10 +433,18 @@ class _BaseStore:
         if generated_before is not None:
             clauses.append("generated_at < ?")
             params = (*params, generated_before)
+        if kind is not None:
+            expression = (
+                "json_extract(payload_json, '$.kind')" if self.ph == "?"
+                else "CAST(payload_json AS jsonb) ->> 'kind'"
+            )
+            clauses.append(f"{expression} = ?")
+            params = (*params, kind)
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
         rows = self._exec(
-            f"SELECT payload_json FROM coach_reviews {where} ORDER BY generated_at DESC, id LIMIT ?",
-            (*params, limit),
+            f"SELECT payload_json FROM coach_reviews {where} "
+            "ORDER BY generated_at DESC, id LIMIT ? OFFSET ?",
+            (*params, limit, offset),
         ).fetchall()
         return [json.loads(row["payload_json"]) for row in rows]
 

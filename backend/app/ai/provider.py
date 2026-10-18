@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 from datetime import datetime, timezone
 
@@ -69,8 +70,8 @@ def validate_advice(output: CoachOutput, context: dict) -> None:
         raise ValueError("The proposal conflicts with the local recovery/safety restrictions.")
     if plan.date.isoformat() != context["next_session_date"]:
         raise ValueError("The proposal uses the wrong training date.")
-    available = context["check_in"].get("available_minutes")
-    if available is not None and plan.duration_min > available:
+    available = context["training_window"]["available_minutes"]
+    if plan.duration_min > available or math.fsum(step.duration_min for step in plan.steps) > available:
         raise ValueError("The proposal exceeds the available training time.")
 
 

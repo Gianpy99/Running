@@ -11,8 +11,9 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 from threading import Lock
+from typing import Literal
 
-from fastapi import Body, FastAPI, File, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -574,9 +575,21 @@ def create_app(db_path: str | None = None) -> FastAPI:
             _COACHING_LOCK.release()
 
     @app.get("/ai/coaching/history")
-    def coaching_history(workout_id: str | None = None) -> list[dict]:
+    def coaching_history(
+        workout_id: str | None = None,
+        kind: Literal["workout_feedback", "next_training"] | None = None,
+        limit: int = Query(10, ge=1, le=50), offset: int = Query(0, ge=0),
+    ) -> list[dict]:
         with store() as s:
-            return s.list_coach_reviews(limit=10, workout_id=workout_id)
+            return s.list_coach_reviews(limit=limit, workout_id=workout_id, kind=kind, offset=offset)
+
+    @app.get("/ai/coaching/history/{review_id}")
+    def get_coaching_review(review_id: str) -> dict:
+        with store() as s:
+            review = s.get_coach_review(review_id)
+        if review is None:
+            raise HTTPException(404, "saved coaching response not found")
+        return review
 
     @app.get("/data-quality")
     def get_data_quality() -> dict:

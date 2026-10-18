@@ -15,7 +15,7 @@ from ..services.readiness import compute_readiness
 from .narrator import build_feature_snapshot
 from .schemas import CoachRequest, CoachingProfile
 
-PROMPT_VERSION = "coach-v1"
+PROMPT_VERSION = "coach-v2"
 INSTRUCTIONS = """You are a running-coaching assistant interpreting supplied evidence.
 Your output is advice for human review, never an instruction to a treadmill or device.
 
@@ -46,6 +46,13 @@ TIME AND PLANNING
   only when supported. Do not invent a fixed season plan or silently choose a race year.
 - Compare like with like: treadmill/outdoor, incline/terrain and main set/whole workout.
   Respect quality flags, estimated treadmill distances and unreliable HR/drift.
+- training_window is the athlete's usual local-clock availability. Its effective
+  available_minutes is a hard cap for the ENTIRE session: warmup, main set, recovery
+  intervals and cooldown together. Finish within the stated window.
+- Do not assume a 30-minute run or 30-minute main set. Choose the duration actually
+  needed for the training objective, recent workload and recovery, up to the cap.
+  Do not fill an hour merely because it is available; shorter training or rest may fit.
+  Use the supplied local-clock window and total cap, never a main-set-only allowance.
 
 TASK: FOLLOW context.purpose, KEEP THE TWO WORKFLOWS SEPARATE
 - workout_feedback: analyze the selected workout, execution, main set, reported RPE,
@@ -224,6 +231,9 @@ def build_context(
         for session in recent_sessions:
             if session["workout_id"] == request.workout_id:
                 session["athlete_feedback"] = report
+    effective_minutes = min(profile.max_session_minutes, profile.training_window_minutes())
+    if request.available_minutes is not None:
+        effective_minutes = min(effective_minutes, request.available_minutes)
     return {
         "purpose": request.purpose,
         "as_of_date": today.isoformat(),
@@ -233,6 +243,15 @@ def build_context(
         "timezone": profile.timezone,
         "next_session_date": next_date.isoformat() if request.purpose == "next_training" else None,
         "profile": profile.model_dump(mode="json"),
+        "training_window": {
+            "start_local": profile.usual_training_start,
+            "finish_by_local": profile.usual_training_end,
+            "timezone": profile.timezone,
+            "maximum_total_minutes": min(profile.max_session_minutes, profile.training_window_minutes()),
+            "available_minutes": effective_minutes,
+            "includes_warmup_recoveries_cooldown": True,
+            "duration_policy": "Choose what the training needs within the cap, not a fixed 30 minutes.",
+        } if request.purpose == "next_training" else None,
         "planning_horizon_status": (
             "unbounded" if profile.planning_horizon is None else
             "past" if profile.planning_horizon < today else "current_or_future"

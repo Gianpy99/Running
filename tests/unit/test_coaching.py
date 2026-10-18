@@ -415,6 +415,90 @@ def test_safety_dates_duration_and_workflow_separation_are_enforced(store):
     with pytest.raises(ValidationError):
         CoachOutput.model_validate(invalid)
 
+def _saved_review(index, kind="next_training", workout_id="latest"):
+    return {
+        "id": f"saved-{index}", "workout_id": workout_id, "kind": kind,
+        "generated_at": (NOW + timedelta(minutes=index)).isoformat(),
+        "model": "saved-test-model", "prompt_version": "coach-v1",
+        "output": _output(kind), "feature_snapshot": {
+            "safety": {"readiness": {"level": "amber", "recommendation": "Keep it easy."}},
+        },
+    }
+
+
+def test_saved_training_is_filtered_before_limit_and_can_be_reopened(client, store, monkeypatch):
+    calls = _mock_provider(monkeypatch)
+    old_training = _saved_review(0)
+    store.save_coach_review(old_training)
+    for index in range(1, 16):
+        store.save_coach_review(_saved_review(index, kind="workout_feedback"))
+    assert all(review["kind"] == "workout_feedback"
+               for review in client.get("/ai/coaching/history").json())
+    assert client.get("/ai/coaching/history?kind=next_training").json() == [old_training]
+    reopened = TestClient(create_app(store.path))
+    assert reopened.get("/ai/coaching/history/saved-0").json() == old_training
+    assert reopened.get("/ai/coaching/history/not-found").status_code == 404
+    assert calls == []
+
+
+def test_saved_history_filters_workout_and_paginates_on_the_server(client, store):
+    for index in range(16):
+        store.save_coach_review(_saved_review(
+            index, kind="workout_feedback" if index % 2 else "next_training",
+            workout_id="old" if index < 8 else "latest",
+        ))
+    response = client.get(
+        "/ai/coaching/history?kind=next_training&workout_id=latest&limit=2&offset=1"
+    )
+    assert response.status_code == 200
+    assert [review["id"] for review in response.json()] == ["saved-12", "saved-10"]
+    assert len(client.get("/ai/coaching/history?kind=next_training&limit=50").json()) == 8
+    for query in ("kind=other", "limit=0", "limit=51", "offset=-1"):
+        assert client.get("/ai/coaching/history?" + query).status_code == 422
+
+
+def test_default_morning_window_caps_total_time_without_assuming_thirty_minutes(store):
+    context = _context(store)
+    window = context["training_window"]
+    assert window["start_local"] == "06:00"
+    assert window["finish_by_local"] == "07:00"
+    assert window["available_minutes"] == 60
+    assert window["maximum_total_minutes"] == 60
+    assert window["includes_warmup_recoveries_cooldown"] is True
+    assert "Do not assume a 30-minute run" in INSTRUCTIONS
+    for duration in (20, 45, 60):
+        provider.validate_advice(CoachOutput.model_validate(_output(duration=duration)), context)
+    with pytest.raises(ValueError, match="available training time"):
+        provider.validate_advice(CoachOutput.model_validate(_output(duration=60.1)), context)
+    rounding_overrun = _output(duration=60)
+    rounding_overrun["next_session"]["steps"][0]["duration_min"] = 60.05
+    with pytest.raises(ValueError, match="available training time"):
+        provider.validate_advice(CoachOutput.model_validate(rounding_overrun), context)
+    assert _context(store, available_minutes=360)["training_window"]["available_minutes"] == 60
+    assert _context(store, available_minutes=40)["training_window"]["available_minutes"] == 40
+
+
+def test_shorter_profile_window_and_request_limits_are_respected(client, store):
+    response = client.put("/ai/coaching/profile", json={
+        "usual_training_start": "06:15", "usual_training_end": "07:00",
+        "max_session_minutes": 60, "goals": "Preserved goal",
+    })
+    assert response.status_code == 200
+    profile = client.get("/ai/coaching/profile").json()
+    assert profile["usual_training_start"] == "06:15"
+    assert profile["goals"] == "Preserved goal"
+    assert _context(store)["training_window"]["available_minutes"] == 45
+    assert _context(store, available_minutes=35)["training_window"]["available_minutes"] == 35
+    assert client.put("/ai/coaching/profile", json={"max_session_minutes": 30}).status_code == 200
+    assert _context(store)["training_window"]["available_minutes"] == 30
+    assert _context(store, "workout_feedback", workout_id="latest")["training_window"] is None
+    for invalid in (
+        {"usual_training_start": "07:00", "usual_training_end": "06:00"},
+        {"usual_training_start": "25:00"}, {"max_session_minutes": 61},
+        {"usual_training_start": "06:59", "usual_training_end": "07:00"},
+    ):
+        assert client.put("/ai/coaching/profile", json=invalid).status_code == 422
+
 
 def test_races_can_be_edited_cancelled_and_removed(client):
     payload = {"name": "July 5k", "race_date": "2027-07-04",

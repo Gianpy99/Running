@@ -57,6 +57,15 @@ all races. Default athlete values used by analytics are not treated as confirmed
   setting and the intended date.
 - Preview the exact context, then **Copy for ChatGPT** or **Ask via API (paid)**.
   Existing local session summaries and deterministic plans remain unchanged.
+- Successful API replies are saved automatically in the app database. Use **Saved
+  coaching** in the header to reopen next-training advice by its intended training date,
+  or switch to workout feedback. Older results are paged; reopening never calls OpenAI.
+  The dedicated reader puts the proposed session first and keeps its close control
+  visible while the response scrolls. Saved readiness is historical: recheck before running.
+- The usual training window is **06:00-07:00**, with a **60-minute maximum for the whole
+  session**, including warmup, recovery intervals and cooldown. The coach chooses the
+  duration needed, not a fixed 30-minute run. Set a shorter per-request limit when needed;
+  morning window/maximum settings are editable under **Coach setup & races**.
 
 See [the prompt/context design](docs/ai-coaching.md) for the evidence windows, safety
 rules, provenance, limitations and refinement checklist.

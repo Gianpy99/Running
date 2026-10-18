@@ -1,4 +1,4 @@
-# Coaching prompt and context, v1
+# Coaching prompt and context, v2
 
 This is a first, editable coaching contract, not a finished individualized season plan.
 The race calendar and athlete facts must be supplied by the athlete; the app cannot read
@@ -36,6 +36,30 @@ recovery is merged with nonblank request fields; older recovery is never reused 
 The coach assesses current training/races and returns exactly one timed proposal,
 rest, or a request for indispensable context. Today's readiness must be rechecked before
 a future session. It never changes the deterministic plan or operates a device.
+
+The athlete's usual availability is **06:00-07:00**, with at most **60 minutes total**,
+including warmup, main set, recovery intervals and cooldown. The coach must choose the
+duration the objective and recovery warrant, rather than assume a 30-minute effort or
+fill the hour unnecessarily. The effective limit is the minimum of the saved maximum,
+saved window length and any shorter per-request allowance; validation enforces it.
+The structured window/maximum are editable in Coach setup. The maximum setting cannot
+exceed 60 minutes. A request claiming more time cannot bypass that cap.
+
+## Reading saved advice
+
+Successful API responses are stored automatically in the app's database (PostgreSQL
+on the Pi), not only in the browser or the ChatGPT conversation. **Saved coaching** in
+the dashboard header opens a dated list, defaulting to next-training advice. Workflow
+filtering happens before pagination, so newer workout-feedback replies cannot hide
+older training advice. Saved advice can also be opened from the preparation form.
+
+The response reader puts the proposed session first, then analysis and caveats.
+Its header/close button remain fixed while a single keyboard/touch-scrollable content
+pane contains the response. The background page is locked while a dialog is open.
+Reopening a result or changing history pages never calls OpenAI. The generated timestamp
+and intended training date are shown; saved readiness is labeled as the assessment
+at generation time, not a new check-in. Old v1 responses are preserved unchanged when the
+prompt becomes v2. They do not acquire the new time-window constraint retroactively.
 
 ## Context layers
 
@@ -127,7 +151,8 @@ race-result import.
 | `GET/POST /races`, `PUT/DELETE /races/{id}` | Race calendar management |
 | `POST /ai/coaching/preview` | Local context, instructions, schema, copyable prompt and hash |
 | `POST /ai/coaching/generate` | Requires the preview hash, then reuses a saved result or makes one paid API call |
-| `GET /ai/coaching/history` | Up to ten saved results, optionally filtered by workout |
+| `GET /ai/coaching/history` | Saved results, filtered by `kind` and/or `workout_id` before pagination (`limit` 1-50, default 10; `offset` nonnegative) |
+| `GET /ai/coaching/history/{id}` | Reopen one saved response, or 404 if absent |
 
 Requests include `purpose: "workout_feedback"` with `workout_id`, or
 `purpose: "next_training"` without a required workout ID. The latter uses the latest

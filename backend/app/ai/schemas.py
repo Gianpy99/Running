@@ -19,6 +19,23 @@ class CoachingProfile(BaseModel):
     preferences: str = Field(default="", max_length=2000)
     history_notes: str = Field(default="", max_length=6000)
     planning_horizon: date | None = None
+    usual_training_start: str = Field(default="06:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    usual_training_end: str = Field(default="07:00", pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+    max_session_minutes: int = Field(default=60, ge=5, le=60)
+
+    @model_validator(mode="after")
+    def valid_training_window(self) -> CoachingProfile:
+        if self.usual_training_end <= self.usual_training_start:
+            raise ValueError("The usual training window must finish after it starts on the same day.")
+        if self.training_window_minutes() < 5:
+            raise ValueError("The usual training window must allow at least five minutes.")
+        return self
+
+    def training_window_minutes(self) -> int:
+        def minutes(clock: str) -> int:
+            hour, minute = map(int, clock.split(":"))
+            return hour * 60 + minute
+        return minutes(self.usual_training_end) - minutes(self.usual_training_start)
 
     @field_validator("timezone")
     @classmethod

@@ -23,9 +23,10 @@ async function coachFetch(url, method='GET', data) {
 
 function coachModal(title) {
   const modal = document.getElementById('modal');
-  modal.innerHTML = `<button class="close" onclick="closeModal()" aria-label="Close">x</button>
-    <h3>${coachEscape(title)}</h3><div id="coachContent" class="coach-form">Loading...</div>`;
-  document.getElementById('overlay').classList.add('open');
+  modal.innerHTML = `<div class="coach-modal-header"><h3 id="coachDialogTitle">${coachEscape(title)}</h3>
+    <button class="close" onclick="closeModal()" aria-label="Close">x</button></div>
+    <div id="coachContent" class="coach-form" tabindex="0" aria-label="Coaching content">Loading...</div>`;
+  openModal();
   return modal.querySelector('#coachContent');
 }
 
@@ -62,7 +63,16 @@ async function openCoachSetup() {
           <label>Planning horizon (include the year)
             <input type="date" name="planning_horizon" value="${coachEscape(profile.planning_horizon)}">
           </label>
+          <label>Usual training start <input type="time" name="usual_training_start" required
+            value="${coachEscape(profile.usual_training_start)}"></label>
+          <label>Finish by <input type="time" name="usual_training_end" required
+            value="${coachEscape(profile.usual_training_end)}"></label>
+          <label>Maximum whole-session minutes (up to 60)
+            <input type="number" name="max_session_minutes" min="5" max="60" step="1" required
+              value="${profile.max_session_minutes}"></label>
         </div>
+        <p class="hint">The time limit includes warmup, recovery intervals and cooldown.
+          The coach chooses the duration needed, not a fixed 30-minute run.</p>
         <p class="hint">Leave the horizon empty to include all races. To plan through July,
           select the exact July date/year you mean; the app will not guess.</p>
         <div class="coach-actions"><button class="upload-btn" type="submit">Save coaching context</button>
@@ -191,31 +201,113 @@ function renderCoaching(review) {
     ${items.map(item => `<li>${coachEscape(item)}</li>`).join('')}</ul>` : '';
   const plan = output.next_session;
   const safety = review.feature_snapshot.safety;
-  return `<h3>${review.kind === 'workout_feedback' ? 'Workout feedback' : 'Next-training preparation'}</h3>
-    <p class="hint">${coachEscape(review.generated_at)} | ${coachEscape(review.model)} |
-      ${coachEscape(review.prompt_version)}${review.cached ? ' | saved result, no new API call' : ''}</p>
-    <p class="coach-output">${coachEscape(output.analysis)}</p>
-    ${list('Observations', output.observations)}
-    ${list('Race implications', output.race_implications)}
-    ${plan ? `<div class="narrative"><b>${coachEscape(plan.date)}: ${coachEscape(plan.title)}</b>
+  return `<article id="coachAdvice">
+    <p class="hint">Saved ${coachEscape(new Date(review.generated_at).toLocaleString())} |
+      ${coachEscape(review.model)} | ${coachEscape(review.prompt_version)}</p>
+    <p class="hint">Saved in this app's database. Reopen it from Saved coaching without another API call.
+      This is advice only; no workout plan was changed automatically.</p>
+    ${review.feature_snapshot.training_window ? `<p class="hint">Prepared for the usual
+      ${coachEscape(review.feature_snapshot.training_window.start_local)}-${coachEscape(review.feature_snapshot.training_window.finish_by_local)}
+      window; ${coachEscape(review.feature_snapshot.training_window.available_minutes)} minutes maximum,
+      including warmup and cooldown.</p>` : ''}
+    ${plan ? `<section class="narrative" aria-label="Proposed training"><h3>${coachEscape(plan.date)}: ${coachEscape(plan.title)}</h3>
       <p>${coachEscape(plan.action)} | ${coachEscape(plan.duration_min)} minutes</p>
       <p class="coach-output">${coachEscape(plan.rationale)}</p>
       <ol>${plan.steps.map(step => `<li>${coachEscape(step.phase)}: ${coachEscape(step.duration_min)}
         min - ${coachEscape(step.target)}</li>`).join('')}</ol>
-      <p class="warn">Local readiness: ${coachEscape(safety.readiness.level)}.
-        ${coachEscape(safety.readiness.recommendation)} Recheck recovery before training.
-        This is a proposal only; it does not change your workout plan or control a device.</p></div>` : ''}
-    ${list('Uncertainties', output.uncertainties)}${list('Questions', output.questions)}`;
+      <p class="warn">Readiness when generated: ${coachEscape(safety.readiness.level)}.
+        ${coachEscape(safety.readiness.recommendation)} This is a saved snapshot, not a new
+        readiness assessment. Recheck recovery before training.</p></section>` : ''}
+    <h4>${review.kind === 'workout_feedback' ? 'Workout analysis' : 'Why this training'}</h4>
+    <p class="coach-output">${coachEscape(output.analysis)}</p>
+    ${list('Observations', output.observations)}
+    ${list('Race implications', output.race_implications)}
+    ${list('Uncertainties', output.uncertainties)}${list('Questions', output.questions)}
+    </article>`;
+}
+
+function showCoachingReview(content, review, onBack) {
+  const title = review.kind === 'next_training' ? 'Saved next-training advice' : 'Saved workout feedback';
+  document.getElementById('coachDialogTitle').textContent = title;
+  content.innerHTML = `<div class="coach-actions"><button type="button" class="upload-btn" id="coachBackToSaved">
+    Back to saved coaching</button></div>${renderCoaching(review)}
+    <button type="button" class="upload-btn" id="coachReaderTop">Back to top</button>`;
+  content.querySelector('#coachBackToSaved').addEventListener('click', onBack);
+  content.querySelector('#coachReaderTop').addEventListener('click', () => { content.scrollTop = 0; });
+  content.scrollTop = 0;
+  content.focus({preventScroll: true});
+}
+
+async function openSavedCoaching(kind='next_training', workoutId=null, offset=0) {
+  const content = coachModal('Saved coaching');
+  content.innerHTML = `<p class="hint">Successful API responses are saved automatically on this server.
+    Reading them is free and does not call the AI again. The training date is the date
+    the advice was prepared for, not a fresh readiness check.</p>
+    <label>Saved workflow<select id="coachHistoryKind">
+      <option value="next_training">Next-training advice</option>
+      <option value="workout_feedback">Workout feedback</option></select></label>
+    ${workoutId ? '<p class="hint">Showing feedback for the selected workout.</p>' : ''}
+    <div id="coachHistory" aria-live="polite">Loading saved responses...</div>
+    <div class="coach-actions"><button id="coachHistoryNewer" class="upload-btn" disabled>Newer</button>
+      <span id="coachHistoryPage"></span><button id="coachHistoryOlder" class="upload-btn" disabled>Older</button></div>
+    <p id="coachHistoryStatus" role="status"></p>`;
+  const select = content.querySelector('#coachHistoryKind');
+  const history = content.querySelector('#coachHistory');
+  const status = content.querySelector('#coachHistoryStatus');
+  const pageSize = 10;
+  select.value = kind;
+  select.addEventListener('change', () => openSavedCoaching(select.value));
+  const query = new URLSearchParams({kind, limit: pageSize + 1, offset});
+  if (kind === 'workout_feedback' && workoutId) query.set('workout_id', workoutId);
+  try {
+    const reviews = await coachFetch('/ai/coaching/history?' + query);
+    if (!content.isConnected) return;
+    history.innerHTML = '';
+    if (!reviews.length) history.textContent = 'No saved responses for this selection yet.';
+    for (const review of reviews.slice(0, pageSize)) {
+      const entry = document.createElement('button');
+      entry.type = 'button'; entry.className = 'upload-btn coach-review-entry';
+      entry.dataset.reviewId = review.id;
+      const plan = review.output.next_session;
+      const heading = document.createElement('strong');
+      heading.textContent = plan ? `${plan.date} - ${plan.title} (${plan.duration_min} min)` : 'Workout feedback';
+      const saved = document.createElement('small');
+      saved.textContent = `Saved ${new Date(review.generated_at).toLocaleString()} | ${review.model}`;
+      entry.append(heading, saved);
+      entry.addEventListener('click', async () => {
+        entry.disabled = true;
+        try {
+          const savedReview = await coachFetch('/ai/coaching/history/' + encodeURIComponent(review.id));
+          if (!content.isConnected) return;
+          showCoachingReview(content, savedReview, () => openSavedCoaching(kind, workoutId, offset));
+        } catch (error) { coachStatus(status, error.message, true); }
+        finally { entry.disabled = false; }
+      });
+      history.append(entry);
+    }
+    const newer = content.querySelector('#coachHistoryNewer');
+    const older = content.querySelector('#coachHistoryOlder');
+    newer.disabled = offset === 0;
+    older.disabled = reviews.length <= pageSize;
+    newer.addEventListener('click', () => openSavedCoaching(kind, workoutId, Math.max(0, offset - pageSize)));
+    older.addEventListener('click', () => openSavedCoaching(kind, workoutId, offset + pageSize));
+    content.querySelector('#coachHistoryPage').textContent = reviews.length
+      ? `Showing ${offset + 1}-${offset + Math.min(pageSize, reviews.length)}` : '';
+  } catch (error) { history.textContent = ''; coachStatus(status, error.message, true); }
 }
 
 async function openCoach(purpose='next_training', workoutId=null) {
   const content = coachModal('AI coaching');
   try {
-    const workouts = await coachFetch('/workouts');
+    const [workouts, profile] = await Promise.all([
+      coachFetch('/workouts'), coachFetch('/ai/coaching/profile')
+    ]);
     if (!content.isConnected) return;
     content.innerHTML = `<p class="hint">Two separate workflows. Previewing/copying is local and free.
       Only "Ask via API" sends the displayed context to OpenAI and may incur API charges.
       It cannot read your existing ChatGPT chat.</p>
+      <div class="coach-actions"><button type="button" class="upload-btn" id="coachOpenSaved">
+        Open saved coaching</button><span class="hint">API responses are saved automatically for later.</span></div>
       <form id="coachRequestForm" class="coach-form">
         <label>What would you like to do?<select name="purpose">
           <option value="workout_feedback">Feedback on a completed workout</option>
@@ -236,7 +328,9 @@ async function openCoach(purpose='next_training', workoutId=null) {
           <div class="grid">
             <label>Next training date (blank = tomorrow in your configured timezone)
               <input name="next_session_date" type="date"></label>
-            <label>Time available (minutes)<input name="available_minutes" type="number" min="5" max="360" step="1"></label>
+            <label>Shorter time limit, if needed (minutes)
+              <input name="available_minutes" type="number" min="5" max="${profile.max_session_minutes}" step="1"
+                placeholder="Blank = usual window, up to ${profile.max_session_minutes} minutes"></label>
             <label>Setting<select name="setting"><option value="either">Either</option>
               <option value="treadmill">Treadmill</option><option value="outdoor">Outdoor</option></select></label>
             <label>Last night's sleep (hours)<input name="sleep_hours" type="number" min="0" max="24" step="0.1"></label>
@@ -248,6 +342,10 @@ async function openCoach(purpose='next_training', workoutId=null) {
               <label>${label}<select name="${key}"><option value="">Unknown / use today's saved check-in</option>
               <option value="false">No</option><option value="true">Yes</option></select></label>`).join('')}
           </div>
+          <p class="hint">Usual training: ${coachEscape(profile.usual_training_start)}-${coachEscape(profile.usual_training_end)}
+            (${coachEscape(profile.timezone)}), maximum ${profile.max_session_minutes} minutes for the
+            entire session, including warmup and cooldown. No fixed 30-minute assumption:
+            the coach chooses what the training and recovery need within this limit.</p>
           <p class="hint">Missing recovery stays unknown. Readiness today is not a guarantee for a future run.
             These answers are saved with the coaching result, not as a replacement for the daily recovery record.</p>
         </div>
@@ -259,16 +357,16 @@ async function openCoach(purpose='next_training', workoutId=null) {
       </form>
       <details id="coachPreview" hidden><summary>Exact prompt, dated context and response schema</summary>
         <textarea class="tm-text" id="coachPromptText" rows="18" readonly aria-label="Full coaching prompt"></textarea></details>
-      <div id="coachResult"></div>
-      <details><summary>Saved results</summary>
-        <button class="upload-btn" type="button" id="coachLoadHistory">Load saved results for this workflow</button>
-        <div id="coachHistory" class="coach-form"></div></details>`;
+      `;
     const form = content.querySelector('#coachRequestForm');
     const status = content.querySelector('#coachRequestStatus');
     const previewEl = content.querySelector('#coachPreview');
     const generate = content.querySelector('#coachGenerate');
     const copy = content.querySelector('#coachCopy');
-    const result = content.querySelector('#coachResult');
+    content.querySelector('#coachOpenSaved').addEventListener('click', () => openSavedCoaching(
+      form.elements.purpose.value,
+      form.elements.purpose.value === 'workout_feedback' ? form.elements.workout_id.value : null,
+    ));
     let previewPayload = null;
     let previewHash = null;
     let revision = 0;
@@ -286,8 +384,6 @@ async function openCoach(purpose='next_training', workoutId=null) {
       form.elements.notes.disabled = !feedback;
       content.querySelectorAll('#coachPreparation input, #coachPreparation select, #coachPreparation textarea')
         .forEach(input => { input.disabled = feedback; });
-      content.querySelector('#coachHistory').innerHTML = '';
-      result.innerHTML = '';
       form.elements.workout_id.required = feedback;
       if (feedback) loadReport();
     }
@@ -394,42 +490,22 @@ async function openCoach(purpose='next_training', workoutId=null) {
         const review = await coachFetch('/ai/coaching/generate', 'POST',
           {...previewPayload, preview_hash: previewHash});
         if (!content.isConnected) return;
-        result.innerHTML = renderCoaching(review);
-        coachStatus(status, review.cached ? 'Loaded the matching saved result; no new API call.' :
-          'Coaching result saved. No training plan was changed automatically.');
+        const reader = coachModal('Saved coaching response');
+        showCoachingReview(reader, review, () => openSavedCoaching(
+          review.kind, review.kind === 'workout_feedback' ? review.workout_id : null,
+        ));
       } catch (error) { coachStatus(status, error.message, true); }
       finally {
         form.querySelector('button[type=submit]').disabled = false;
         generate.disabled = !previewPayload;
       }
     });
-    content.querySelector('#coachLoadHistory').addEventListener('click', async event => {
-      const button = event.target;
-      button.disabled = true;
-      try {
-        const feedback = form.elements.purpose.value === 'workout_feedback';
-        const query = feedback && form.elements.workout_id.value
-          ? `?workout_id=${encodeURIComponent(form.elements.workout_id.value)}` : '';
-        const reviews = (await coachFetch('/ai/coaching/history' + query))
-          .filter(review => review.kind === form.elements.purpose.value);
-        const history = content.querySelector('#coachHistory');
-        history.innerHTML = '';
-        if (!reviews.length) history.textContent = 'No saved results for this selection yet.';
-        for (const review of reviews) {
-          const entry = document.createElement('button');
-          entry.type = 'button'; entry.className = 'upload-btn';
-          entry.textContent = `${review.generated_at} - ${review.model}`;
-          entry.addEventListener('click', () => { result.innerHTML = renderCoaching({...review, cached:true}); });
-          history.append(entry);
-        }
-      } catch (error) { coachStatus(status, error.message, true); }
-      finally { button.disabled = false; }
-    });
   } catch (error) { content.textContent = error.message; }
 }
 
 document.getElementById('coachSetupBtn').addEventListener('click', openCoachSetup);
 document.getElementById('prepareCoachBtn').addEventListener('click', () => openCoach('next_training'));
+document.getElementById('savedCoachBtn').addEventListener('click', () => openSavedCoaching());
 document.addEventListener('click', event => {
   const button = event.target.closest('#workoutCoachBtn');
   if (button) openCoach('workout_feedback', decodeURIComponent(button.dataset.workoutId));
