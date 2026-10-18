@@ -119,6 +119,15 @@
   .coach-output { white-space: pre-wrap; overflow-wrap: anywhere; }
   .coach-scroll { overflow-x: auto; }
   .coach-form [hidden] { display: none; }
+  .body-head { display: flex; gap: .8rem; justify-content: space-between; flex-wrap: wrap; }
+  .body-controls { display: flex; gap: .8rem; flex-wrap: wrap; margin: 1rem 0; }
+  .body-controls label { flex: 1; min-width: 140px; }
+  .body-value { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .body-history { overflow: auto; max-height: 420px; }
+  .body-history th { white-space: nowrap; }
+  .body-history button { min-height: 36px; }
+  #bodyTracker { margin-top: 1.1rem; }
+  #bodyTracker canvas { max-height: 280px; }
   .tm-text { width: 100%; box-sizing: border-box; border-radius: 8px; padding: .6rem;
              font-size: .9rem; resize: vertical; }
 </style>
@@ -138,6 +147,9 @@
 </header>
 <main>
   <div id="app" class="loading">Loading your running data…</div>
+  <section id="bodyTracker" class="panel" aria-label="Weight and body composition">
+    <div class="loading">Loading weight tracker...</div>
+  </section>
 </main>
 
 <div class="overlay" id="overlay">
@@ -214,7 +226,6 @@ function chartPanels() {
     <div class="panel"><h2>Pace trend</h2><p class="hint">avg pace per session (lower is faster) — dashed = treadmill main set, warmup/cooldown excluded</p><canvas id="c_pace"></canvas></div>
     <div class="panel"><h2>Training load</h2><p class="hint">per session with 3-session rolling average</p><canvas id="c_load"></canvas></div>
     <div class="panel"><h2>Avg heart rate</h2><p class="hint">per session (suspect HR down-weighted) — dashed = treadmill main set</p><canvas id="c_hr"></canvas></div>
-    <div class="panel"><h2>Body weight</h2><p class="hint">rolling trend from smart scale</p><canvas id="c_weight"></canvas></div>
     <div class="panel"><h2>Session mix</h2><p class="hint">how your sessions are classified</p><canvas id="c_mix"></canvas></div>
   </div>`;
 }
@@ -275,14 +286,6 @@ function drawCharts(d) {
     ...(hasMainSetHr ? [{ label:'main-set HR', data: w.map(x=>x.main_set_avg_hr || x.avg_hr),
       borderColor:'#f2b134', borderDash:[6,4], tension:.3, spanGaps:false, pointRadius:2 }] : []),
   ], { yTitle:'bpm' });
-  // weight
-  if (d.body && d.body.series?.length) {
-    const b = d.body.series;
-    lineChart('c_weight', b.map(x=>fmtDate(x.date)), [
-      { label:'weight', data: b.map(x=>x.weight_kg), borderColor:'#8ba0b3', pointRadius:2, tension:.2 },
-      { label:'rolling', data: b.map(x=>x.rolling_kg), borderColor:'#3fb6ff', pointRadius:0, tension:.3 },
-    ], { yTitle:'kg' });
-  }
   // mix doughnut
   const mix = d.session_breakdown;
   if (charts.c_mix) charts.c_mix.destroy();
@@ -818,16 +821,16 @@ async function init() {
   const app = document.getElementById('app');
   try {
     const d = await j('/summary');
+    app.classList.remove('loading');
     if (!d.totals.workouts) {
-      app.innerHTML = `<div class="panel"><h2>No data yet</h2>
-        <p class="hint">Import your files first:</p>
-        <pre>running-coach import --raw .. --db data/coach.db</pre></div>`;
+      app.innerHTML = `<div class="panel"><h2>No running workouts yet</h2>
+        <p class="hint">Use Upload run above to add a watch file. You can import scale
+          history independently in the weight tracker below.</p></div>`;
       return;
     }
-    app.classList.remove('loading');
     app.innerHTML = renderOverview(d) + chartPanels() + workoutsTable(d.workouts);
     drawCharts(d);
-    document.querySelectorAll('tbody tr').forEach(tr =>
+    app.querySelectorAll('tbody tr[data-id]').forEach(tr =>
       tr.addEventListener('click', () => openWorkout(tr.dataset.id)));
   } catch (e) {
     app.innerHTML = `<div class="panel"><h2>Could not reach the API</h2>
@@ -837,5 +840,6 @@ async function init() {
 init();
 </script>
 <script src="/static/coaching.js"></script>
+<script src="/static/body.js"></script>
 </body>
 </html>

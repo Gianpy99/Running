@@ -20,6 +20,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from ..models import BodyMeasurement, RecoveryContext, Workout
+from .body_import import plan_body_import
 
 # --- Schema (portable across SQLite and PostgreSQL) --------------------------
 # Timestamps are stored as ISO-8601 TEXT to keep the canonical model byte-for-byte
@@ -145,15 +146,7 @@ class _BaseStore:
                 self.conn.commit()
             except Exception:
                 self.conn.rollback()
-        if self.ph == "?":
-            race_columns = {row["name"] for row in self._exec("PRAGMA table_info(races)").fetchall()}
-        else:
-            race_columns = {
-                row["column_name"] for row in self._exec(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_schema = current_schema() AND table_name = 'races'"
-                ).fetchall()
-            }
+        race_columns = self._table_columns("races")
         for name, ddl in (
             ("priority", "TEXT NOT NULL DEFAULT 'B'"),
             ("status", "TEXT NOT NULL DEFAULT 'planned'"),
@@ -162,6 +155,31 @@ class _BaseStore:
             if name not in race_columns:
                 self._exec(f"ALTER TABLE races ADD COLUMN {name} {ddl}")
         self.conn.commit()
+        if "details_json" not in self._table_columns("body_measurements"):
+            if self.ph == "?":
+                self._exec("BEGIN IMMEDIATE")
+                if "details_json" not in self._table_columns("body_measurements"):
+                    self._exec(
+                        "ALTER TABLE body_measurements ADD COLUMN details_json TEXT NOT NULL DEFAULT '{}'"
+                    )
+            else:
+                self._exec(
+                    "ALTER TABLE body_measurements ADD COLUMN IF NOT EXISTS "
+                    "details_json TEXT NOT NULL DEFAULT '{}'"
+                )
+        self.conn.commit()
+
+    def _table_columns(self, table: str) -> set[str]:
+        if table not in ("races", "body_measurements"):
+            raise ValueError("Unsupported schema inspection table.")
+        if self.ph == "?":
+            return {row["name"] for row in self._exec(f"PRAGMA table_info({table})").fetchall()}
+        return {
+            row["column_name"] for row in self._exec(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND table_name = ?", (table,),
+            ).fetchall()
+        }
 
     # --- workouts ---
     def upsert_workout(self, workout: Workout, analysis: dict | None = None) -> None:
@@ -255,20 +273,43 @@ class _BaseStore:
         return removed
 
     # --- body ---
-    def upsert_body_measurements(self, measurements: list[BodyMeasurement]) -> int:
+    def _write_body_measurements(self, measurements: list[BodyMeasurement]) -> None:
         for m in measurements:
             self._exec(
                 """INSERT INTO body_measurements
-                   (timestamp, weight_kg, body_fat_pct, muscle_mass_kg, water_pct, source)
-                   VALUES (?,?,?,?,?,?)
+                   (timestamp, weight_kg, body_fat_pct, muscle_mass_kg, water_pct, source, details_json)
+                   VALUES (?,?,?,?,?,?,?)
                    ON CONFLICT(timestamp) DO UPDATE SET
                      weight_kg=excluded.weight_kg, body_fat_pct=excluded.body_fat_pct,
-                     muscle_mass_kg=excluded.muscle_mass_kg, water_pct=excluded.water_pct""",
+                     muscle_mass_kg=excluded.muscle_mass_kg, water_pct=excluded.water_pct,
+                     details_json=excluded.details_json""",
                 (m.timestamp.isoformat(), m.weight_kg, m.body_fat_pct,
-                 m.muscle_mass_kg, m.water_pct, m.source),
+                 m.muscle_mass_kg, m.water_pct, m.source,
+                 m.model_dump_json(exclude={
+                     "timestamp", "weight_kg", "body_fat_pct", "muscle_mass_kg", "water_pct", "source",
+                 })),
             )
+
+    def upsert_body_measurements(self, measurements: list[BodyMeasurement]) -> int:
+        self._write_body_measurements(measurements)
         self.conn.commit()
         return len(measurements)
+
+    def import_body_measurements(self, measurements: list[BodyMeasurement], *, preview: bool = False) -> dict:
+        if preview:
+            return plan_body_import(self.list_body_measurements(), measurements).report()
+        try:
+            if self.ph == "?":
+                self._exec("BEGIN IMMEDIATE")
+            else:
+                self._exec("LOCK TABLE body_measurements IN SHARE ROW EXCLUSIVE MODE")
+            plan = plan_body_import(self.list_body_measurements(), measurements)
+            self._write_body_measurements(plan.writes)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return plan.report()
 
     def list_body_measurements(self) -> list[BodyMeasurement]:
         rows = self._exec(
@@ -276,6 +317,7 @@ class _BaseStore:
         ).fetchall()
         return [
             BodyMeasurement(
+                **json.loads(r["details_json"]),
                 timestamp=datetime.fromisoformat(r["timestamp"]),
                 weight_kg=r["weight_kg"], body_fat_pct=r["body_fat_pct"],
                 muscle_mass_kg=r["muscle_mass_kg"], water_pct=r["water_pct"],

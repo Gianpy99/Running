@@ -38,6 +38,7 @@ from ..services.pipeline import process_raw_directory, reanalyse_stored_workouts
 from ..services.readiness import compute_readiness
 from ..training.dsl import load_definition, standard_treadmill_session
 from ..training.planner import adapt_definition, generate_next_session
+from .body import register_body_routes
 
 ATHLETE = Athlete()
 
@@ -130,6 +131,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
                   description="Deterministic running analytics core (PRD v2.0)",
                   lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=_DASHBOARD_HTML.parent), name="static")
+    register_body_routes(app, store)
 
     @app.post("/workouts/reanalyse")
     def reanalyse(force: bool = Body(False, embed=True)) -> dict:

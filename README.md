@@ -24,6 +24,8 @@ offline; optional OpenAI coaching provides interpretation and advisory-only plan
 - **Opt-in coaching**: separate workout-feedback and next-training workflows, with
   editable athlete context/races, exact prompt preview, ChatGPT export, and saved
   structured OpenAI responses. No paid calls on upload or when viewing a workout.
+- **Weight & body composition**: mobile `.xls` upload with import preview, timestamp-based
+  incremental updates, all export fields, selectable trends and paged reading details.
 
 ## Quick start
 
@@ -75,6 +77,49 @@ Docker build context. API billing is separate from a ChatGPT subscription.
 **Pi key:** use the Jenkins Secret text credential described in
 [the deployment runbook](deploy/README.md#optional-openai-coaching); a Windows `.env`
 does not configure the deployed Pi.
+
+## Weight & body composition
+
+The dashboard's **Weight & body composition** section works even before you log a run.
+From your phone, tap **Import scale history (.xls)** and select the full, original INSMART
+export. Review the counts/fields, then confirm the import:
+
+- New timestamps are inserted, including older readings missing from stored history.
+- Exact repeats are skipped, so you can upload the full history every time.
+- Existing readings can gain previously missing columns, without changing recorded values.
+- Conflicting values at the same timestamp are reported and that timestamp is left
+  unchanged. Duplicate rows within a file are combined only if they agree.
+- Invalid dates/weights are skipped with explicit warnings. Invalid optional values stay
+  visible as original text with a warning, rather than becoming invented numbers.
+- Preview is read-only; the confirmation step recomputes changes against current storage.
+
+All 19 columns in the current export are retained, including BMI, visceral fat, bone mass,
+BMR, protein, fat level, subcutaneous fat, lean body mass, body type, standard weight,
+heart rate, body age, skeletal muscle and muscle ratio. Unknown future columns are kept
+as original values too. `--` is shown as missing, not zero. **View reading** displays every
+original column; **All fields from the latest reading** is available above the chart.
+Older records imported by earlier app versions gain these details when re-uploaded.
+
+Choose a metric and history range for the chart; the trend is a **5-reading average**,
+not a five-day average. History is paged newest first; chart display is capped at the
+latest 1,000 available points, with an explicit notice. The latest card uses the latest
+measurement, which may be old; its full date/time is shown. Export timestamps retain
+their local wall-clock meaning, matching existing stored history. Two measurements on
+the same day at different times stay separate. Future-dated readings are retained and
+flagged, but excluded from the dated history/chart.
+
+This is a single-athlete tracker for original, one-sheet INSMART BIFF `.xls` exports in
+kg (up to 5 MiB / 20,000 rows). `.xlsx`, renamed files, pounds, ambiguous headers and
+timezone-suffixed timestamps are rejected explicitly. Uploading a file never sends it
+to OpenAI: **body data remains excluded from coaching context**. Scale body-composition,
+BMR and body-age figures are app estimates, not clinical measurements or target weights.
+Original cell values are stored in the database; the uploaded file itself is not saved.
+
+API: `POST /body/import` accepts multipart `file` and defaults to `preview=true`;
+use `preview=false` to confirm. `GET /body` returns metric metadata, latest reading,
+compact trend points and paged details (`metric`, `days`, `offset`, `limit`).
+The CLI's raw-source reprocessing remains an explicit authoritative upsert; use the
+dashboard's additive upload workflow for routine full-history updates.
 
 ## Layout
 
