@@ -59,6 +59,20 @@ CREATE TABLE IF NOT EXISTS recovery_context (
     for_date TEXT PRIMARY KEY,
     payload_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS coaching_profile (
+    id TEXT PRIMARY KEY,
+    payload_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workout_feedback (
+    workout_id TEXT PRIMARY KEY REFERENCES workouts(id) ON DELETE CASCADE,
+    payload_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS coach_reviews (
+    id TEXT PRIMARY KEY,
+    workout_id TEXT REFERENCES workouts(id) ON DELETE CASCADE,
+    generated_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
 """
 
 # Columns added after the initial schema shipped. ``CREATE TABLE IF NOT EXISTS`` leaves
@@ -131,6 +145,23 @@ class _BaseStore:
                 self.conn.commit()
             except Exception:
                 self.conn.rollback()
+        if self.ph == "?":
+            race_columns = {row["name"] for row in self._exec("PRAGMA table_info(races)").fetchall()}
+        else:
+            race_columns = {
+                row["column_name"] for row in self._exec(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() AND table_name = 'races'"
+                ).fetchall()
+            }
+        for name, ddl in (
+            ("priority", "TEXT NOT NULL DEFAULT 'B'"),
+            ("status", "TEXT NOT NULL DEFAULT 'planned'"),
+            ("notes", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if name not in race_columns:
+                self._exec(f"ALTER TABLE races ADD COLUMN {name} {ddl}")
+        self.conn.commit()
 
     # --- workouts ---
     def upsert_workout(self, workout: Workout, analysis: dict | None = None) -> None:
@@ -191,6 +222,8 @@ class _BaseStore:
 
     def delete_workout(self, workout_id: str) -> bool:
         """Remove a workout and its analysis. Returns True if a row was deleted."""
+        self._exec("DELETE FROM coach_reviews WHERE workout_id = ?", (workout_id,))
+        self._exec("DELETE FROM workout_feedback WHERE workout_id = ?", (workout_id,))
         cur = self._exec("DELETE FROM workouts WHERE id = ?", (workout_id,))
         self._exec("DELETE FROM analyses WHERE workout_id = ?", (workout_id,))
         self.conn.commit()
@@ -269,8 +302,11 @@ class _BaseStore:
 
     # --- races ---
     def add_race(self, name: str, race_date: str | None, distance_m: float | None,
-                 target_time_s: int | None, verified: bool = False) -> int:
+                 target_time_s: int | None, verified: bool = False, *,
+                 priority: str = "B", status: str = "planned", notes: str = "") -> int:
         new_id = self._insert_race(name, race_date, distance_m, target_time_s, verified)
+        self._exec("UPDATE races SET priority=?, status=?, notes=? WHERE id=?",
+                   (priority, status, notes, new_id))
         self.conn.commit()
         return new_id
 
@@ -280,6 +316,86 @@ class _BaseStore:
     def list_races(self) -> list[dict]:
         rows = self._exec("SELECT * FROM races ORDER BY race_date").fetchall()
         return [dict(r) for r in rows]
+
+    def update_race(self, race_id: int, race: dict) -> bool:
+        cur = self._exec(
+            """UPDATE races SET name=?, race_date=?, distance_m=?, target_time_s=?,
+               verified=?, priority=?, status=?, notes=? WHERE id=?""",
+            (race["name"], race["race_date"], race["distance_m"], race["target_time_s"],
+             race["verified"], race["priority"], race["status"], race["notes"], race_id),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def delete_race(self, race_id: int) -> bool:
+        cur = self._exec("DELETE FROM races WHERE id=?", (race_id,))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def get_coaching_profile(self) -> dict | None:
+        row = self._exec(
+            "SELECT payload_json FROM coaching_profile WHERE id=?", ("default",)
+        ).fetchone()
+        return json.loads(row["payload_json"]) if row else None
+
+    def save_coaching_profile(self, profile: dict) -> None:
+        self._exec(
+            """INSERT INTO coaching_profile (id, payload_json) VALUES (?,?)
+               ON CONFLICT(id) DO UPDATE SET payload_json=excluded.payload_json""",
+            ("default", json.dumps(profile, allow_nan=False)),
+        )
+        self.conn.commit()
+
+    def get_workout_feedback(self, workout_id: str) -> dict | None:
+        row = self._exec(
+            "SELECT payload_json FROM workout_feedback WHERE workout_id=?", (workout_id,)
+        ).fetchone()
+        return json.loads(row["payload_json"]) if row else None
+
+    def save_workout_feedback(self, workout_id: str, feedback: dict) -> None:
+        self._exec(
+            """INSERT INTO workout_feedback (workout_id, payload_json) VALUES (?,?)
+               ON CONFLICT(workout_id) DO UPDATE SET payload_json=excluded.payload_json""",
+            (workout_id, json.dumps(feedback, allow_nan=False)),
+        )
+        self.conn.commit()
+
+    def get_coach_review(self, review_id: str) -> dict | None:
+        row = self._exec(
+            "SELECT payload_json FROM coach_reviews WHERE id=?", (review_id,)
+        ).fetchone()
+        return json.loads(row["payload_json"]) if row else None
+
+    def save_coach_review(self, review: dict) -> None:
+        self._exec(
+            """INSERT INTO coach_reviews (id, workout_id, generated_at, payload_json)
+               VALUES (?,?,?,?) ON CONFLICT(id) DO NOTHING""",
+            (review["id"], review["workout_id"], review["generated_at"],
+             json.dumps(review, allow_nan=False)),
+        )
+        self.conn.commit()
+
+    def list_coach_reviews(
+        self, limit: int = 10, exclude_workout_id: str | None = None,
+        workout_id: str | None = None, generated_before: str | None = None,
+    ) -> list[dict]:
+        clauses: list[str] = []
+        params: tuple = ()
+        if exclude_workout_id is not None:
+            clauses.append("(workout_id != ? OR workout_id IS NULL)")
+            params = (exclude_workout_id,)
+        elif workout_id is not None:
+            clauses.append("workout_id = ?")
+            params = (workout_id,)
+        if generated_before is not None:
+            clauses.append("generated_at < ?")
+            params = (*params, generated_before)
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
+        rows = self._exec(
+            f"SELECT payload_json FROM coach_reviews {where} ORDER BY generated_at DESC, id LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+        return [json.loads(row["payload_json"]) for row in rows]
 
 
 class SqliteStore(_BaseStore):

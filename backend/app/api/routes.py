@@ -10,12 +10,17 @@ import os
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
+from threading import Lock
 
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from ..ai import explain_session, recommend_next_session
+from ..ai.context import build_context, context_hash
+from ..ai.provider import CoachingError, configured_model, preview_context, request_coaching, review_id
+from ..ai.schemas import CoachRequest, CoachingProfile, RaceInput, WorkoutFeedback
 from ..analytics.analysis import analyse_workout
 from ..analytics.terrain import infer_terrain
 from ..ingestion import (
@@ -37,6 +42,7 @@ from ..training.planner import adapt_definition, generate_next_session
 ATHLETE = Athlete()
 
 _DASHBOARD_HTML = Path(__file__).parent / "static" / "index.html"
+_COACHING_LOCK = Lock()
 
 
 class RecoveryIn(BaseModel):
@@ -50,14 +56,6 @@ class RecoveryIn(BaseModel):
     illness: bool = False
     concerning_pain: bool = False
     notes: str | None = None
-
-
-class RaceIn(BaseModel):
-    name: str
-    race_date: str | None = None
-    distance_m: float | None = None
-    target_time_s: int | None = None
-    verified: bool = False
 
 
 class TreadmillLogIn(BaseModel):
@@ -131,6 +129,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
     app = FastAPI(title="AI Running Coach", version="0.1.0",
                   description="Deterministic running analytics core (PRD v2.0)",
                   lifespan=lifespan)
+    app.mount("/static", StaticFiles(directory=_DASHBOARD_HTML.parent), name="static")
 
     @app.post("/workouts/reanalyse")
     def reanalyse(force: bool = Body(False, embed=True)) -> dict:
@@ -479,12 +478,103 @@ def create_app(db_path: str | None = None) -> FastAPI:
             return s.list_races()
 
     @app.post("/races")
-    def post_race(payload: RaceIn) -> dict:
+    def post_race(payload: RaceInput) -> dict:
+        race = payload.model_dump(mode="json")
         with store() as s:
-            race_id = s.add_race(payload.name, payload.race_date, payload.distance_m,
-                                 payload.target_time_s, payload.verified)
+            race_id = s.add_race(payload.name, race["race_date"], payload.distance_m,
+                                 payload.target_time_s, payload.verified,
+                                 priority=payload.priority, status=payload.status, notes=payload.notes)
         # Future race dates must be verified before treated as authoritative (PRD §16).
         return {"id": race_id, "verified": payload.verified}
+
+    @app.put("/races/{race_id}")
+    def put_race(race_id: int, payload: RaceInput) -> dict:
+        with store() as s:
+            if not s.update_race(race_id, payload.model_dump(mode="json")):
+                raise HTTPException(404, "race not found")
+        return {"id": race_id, "verified": payload.verified}
+
+    @app.delete("/races/{race_id}")
+    def delete_race(race_id: int) -> dict:
+        with store() as s:
+            if not s.delete_race(race_id):
+                raise HTTPException(404, "race not found")
+        return {"status": "ok", "deleted": race_id}
+
+    @app.get("/ai/coaching/profile")
+    def get_coaching_profile() -> dict:
+        with store() as s:
+            return CoachingProfile.model_validate(s.get_coaching_profile() or {}).model_dump(mode="json")
+
+    @app.get("/workouts/{workout_id}/feedback")
+    def get_workout_feedback(workout_id: str) -> dict:
+        with store() as s:
+            if s.get_workout(workout_id) is None:
+                raise HTTPException(404, "workout not found")
+            feedback = s.get_workout_feedback(workout_id)
+        return {"available": feedback is not None, "feedback": feedback}
+
+    @app.put("/workouts/{workout_id}/feedback")
+    def save_workout_feedback(workout_id: str, feedback: WorkoutFeedback) -> dict:
+        with store() as s:
+            if s.get_workout(workout_id) is None:
+                raise HTTPException(404, "workout not found")
+            s.save_workout_feedback(workout_id, feedback.model_dump())
+        return {"status": "ok"}
+
+    @app.put("/ai/coaching/profile")
+    def put_coaching_profile(profile: CoachingProfile) -> dict:
+        with store() as s:
+            s.save_coaching_profile(profile.model_dump(mode="json"))
+        return {"status": "ok"}
+
+    def coaching_context(payload: CoachRequest) -> dict:
+        try:
+            with store() as s:
+                return build_context(s, payload, ATHLETE)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post("/ai/coaching/preview")
+    def preview_coaching(payload: CoachRequest) -> dict:
+        try:
+            return preview_context(coaching_context(payload))
+        except CoachingError as exc:
+            raise HTTPException(exc.status_code, str(exc)) from exc
+
+    @app.post("/ai/coaching/generate")
+    def generate_coaching(payload: CoachRequest) -> dict:
+        context = coaching_context(payload)
+        if payload.preview_hash != context_hash(context):
+            raise HTTPException(409, "Preview the current context first; it may have changed.")
+        if not _COACHING_LOCK.acquire(blocking=False):
+            raise HTTPException(409, "Another coaching request is running. Please wait before retrying.")
+        try:
+            model = configured_model()
+            rid = review_id(context, model)
+            with store() as s:
+                cached = s.get_coach_review(rid)
+            if cached:
+                return {**cached, "cached": True}
+            result = request_coaching(context, model)
+            with store() as s:
+                if payload.purpose == "workout_feedback" and payload.workout_id:
+                    s.save_workout_feedback(payload.workout_id, {
+                        "notes": payload.notes, "perceived_exertion": payload.perceived_exertion,
+                    })
+                s.save_coach_review(result)
+            return {**result, "cached": False}
+        except CoachingError as exc:
+            raise HTTPException(exc.status_code, str(exc)) from exc
+        finally:
+            _COACHING_LOCK.release()
+
+    @app.get("/ai/coaching/history")
+    def coaching_history(workout_id: str | None = None) -> list[dict]:
+        with store() as s:
+            return s.list_coach_reviews(limit=10, workout_id=workout_id)
 
     @app.get("/data-quality")
     def get_data_quality() -> dict:

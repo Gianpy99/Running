@@ -11,3 +11,5 @@ data/processed/*.json
 /deletemme/
 /Running.zip
 .env
+.env.*
+!.env.example

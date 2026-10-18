@@ -47,8 +47,23 @@ flowchart LR
 - Every derived metric exposes the thresholds/model it used.
 - AI outputs are wrapped with prompt version, model, feature-snapshot hash and output.
 
+## Opt-in coaching
+
+The existing deterministic narrator and planner remain unchanged. The dashboard offers
+two distinct workflows: retrospective workout feedback and current next-training
+preparation. Both use a shared versioned prompt and dated context builder, editable
+coaching profile and race calendar, and an exact local preview/ChatGPT export.
+
+Only the explicit generate endpoint calls OpenAI Responses with Structured Outputs and
+`store=false`. Validated results, their complete input snapshot, schema, prompt, model
+and token usage are stored in the same SQLite/PostgreSQL database. Matching requests
+reuse saved results; a single-process lock prevents overlapping paid requests. Preview
+hashes reject requests whose data changed since approval. AI proposals never replace
+deterministic plans or control a device.
+
+See [AI coaching design](ai-coaching.md) for the full prompt/context contract and limits.
+
 ## Deferred (validation-gated)
 
 - `dashboard/` (React/TS) — Sprint 2 (§22).
 - `wearos/` (Kotlin) — requires the coexistence feasibility spike first (§5.3, §22, §24).
-- OpenAI Responses API wiring — only after deterministic analytics are stable (§23).

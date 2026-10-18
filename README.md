@@ -2,7 +2,7 @@
 
 Deterministic, local-first running analytics platform implementing the MVP scope of
 `AI_Running_Coach_PRD_v2.0`. Real-time and safety-sensitive logic is deterministic and
-offline; AI is reserved for interpretation and higher-order planning (not yet wired).
+offline; optional OpenAI coaching provides interpretation and advisory-only planning.
 
 ## What is implemented (MVP, deterministic)
 
@@ -21,6 +21,9 @@ offline; AI is reserved for interpretation and higher-order planning (not yet wi
   selected by `DATABASE_URL`.
 - **Import CLI**: reprocesses raw files → workout JSON + data-quality report (PRD §23).
 - **FastAPI backend**: the API sketch from PRD §20, plus a `/health` probe.
+- **Opt-in coaching**: separate workout-feedback and next-training workflows, with
+  editable athlete context/races, exact prompt preview, ChatGPT export, and saved
+  structured OpenAI responses. No paid calls on upload or when viewing a workout.
 
 ## Quick start
 
@@ -38,6 +41,40 @@ uvicorn app.main:app --app-dir backend --reload
 # Tests / regression suite
 pytest
 ```
+
+## Coaching
+
+Open **Coach setup & races** to confirm your background, goals, constraints and race
+calendar. A planning horizon is an exact date, including year; leave it blank to include
+all races. Default athlete values used by analytics are not treated as confirmed facts.
+
+- **After a run:** upload the watch TCX, open the session, choose **Get workout
+  feedback**, and add notes/RPE. Save the notes without an API call, or request API
+  feedback (which also saves them). Those reports inform next-training preparation.
+- **Before a run:** choose **Prepare next training**, add recovery, available time,
+  setting and the intended date.
+- Preview the exact context, then **Copy for ChatGPT** or **Ask via API (paid)**.
+  Existing local session summaries and deterministic plans remain unchanged.
+
+See [the prompt/context design](docs/ai-coaching.md) for the evidence windows, safety
+rules, provenance, limitations and refinement checklist.
+
+**Local key:** copy `.env.example` to `.env` and paste the key after `OPENAI_API_KEY=`.
+Do not use the example file for real secrets. For a native development server, explicitly
+load that file (a plain `uvicorn` command does not load it automatically):
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --reload --env-file .env
+```
+
+For local SQLite, remove/comment out `DATABASE_URL` in your `.env` and set
+`COACH_DB=data/coach.db` (the example's container path is not a Windows development path).
+Docker Compose loads `.env` via `env_file`. Local secrets are excluded from Git and the
+Docker build context. API billing is separate from a ChatGPT subscription.
+
+**Pi key:** use the Jenkins Secret text credential described in
+[the deployment runbook](deploy/README.md#optional-openai-coaching); a Windows `.env`
+does not configure the deployed Pi.
 
 ## Layout
 
@@ -57,4 +94,3 @@ the shared PostgreSQL and published at `running.borrellofamily.co.uk` (host port
 - Local image test: `docker compose up --build` (copy `.env.example` → `.env` first).
 - Full step-by-step runbook (DB creation, Jenkins job/secret, Caddy route, DNS):
   see [deploy/README.md](deploy/README.md).
-

@@ -117,3 +117,55 @@ cloudflared tunnel route dns family-portal running.borrellofamily.co.uk
 - **Re-seeding**: seeding only runs when the `workouts` table is empty. To force a
   re-import: `docker exec ai-running-coach python -m app.cli import --raw data/regression --db "$DATABASE_URL" --report data/processed/data_quality.json`.
 - **Local test of the image**: `docker compose up --build` (uses `.env`; copy from `.env.example`).
+
+## Optional OpenAI coaching
+
+The deployment remains usable without an API key: previews, ChatGPT copy/export, local
+analytics and deterministic plans all work. Viewing/importing a workout never calls
+OpenAI. API charges occur only after an explicit preview and **Ask via API**.
+
+### Where to paste the key on the Pi
+
+Use the **Jenkins web UI**, not a repository file or a pipeline parameter:
+
+1. Open **Manage Jenkins -> Credentials -> System -> Global credentials -> Add Credentials**.
+2. Select **Secret text**.
+3. Paste the OpenAI API key into **Secret**.
+4. Set **ID** to `running-coach-openai-api-key` and save.
+5. Run the `ai-running-coach` job using **Build with Parameters**, enable
+   `ENABLE_AI_COACHING`, and leave `COACH_OPENAI_MODEL=gpt-5-mini` initially.
+   The parameters appear after Jenkins first loads the updated pipeline.
+6. The pipeline preserves your last parameter selections as defaults for subsequent
+   builds, including SCM polling. Verify the coaching preview reports that the API is
+   configured. Do not print the container environment to check a key.
+
+The pipeline binds the secret to the container at runtime; it is not a Docker build
+argument, image layer, Git file, or browser setting. The optional credential is not
+required when `ENABLE_AI_COACHING` is false. Rotate/revoke keys in OpenAI and replace the
+Jenkins credential before redeploying. Docker/Jenkins administrators can access runtime
+secrets, so protect their accounts and backups.
+
+For local development only, paste a key into the git-ignored `.env` as
+`OPENAI_API_KEY=...`; use the native `--env-file .env` command in the main README or
+Docker Compose. The Pi and Windows have separate runtime environments; neither copies
+the other's `.env`. Prefer separate OpenAI project keys/budgets for development and Pi.
+
+### Operation and privacy
+
+- Set an OpenAI project budget/alerts and access limits before enabling API coaching.
+  The selected model must support Responses API Structured Outputs.
+- The selected prompt/context is sent to OpenAI; no raw trackpoints, GPS coordinates,
+  raw files, body measurements or API keys are included. Athlete-entered notes/profile
+  may contain personal information: inspect the preview and remove unwanted details.
+- `store=false` disables Responses application-state storage; it is **not** a promise
+  of zero provider retention. Review OpenAI's current data controls for your account.
+- Contexts and advice are stored in the application's database and its backups. The
+  existing family-portal authentication must protect all routes, including `/ai/*`.
+  Do not expose the container port directly to the Internet. The app has no separate
+  per-user authorization or distributed cost limiter.
+- One process allows one paid request at a time, with no automatic retries and a
+  90-second provider timeout. Identical context/model/prompt requests reuse a result.
+  Multi-worker deployments would need a shared request/budget lock.
+- Errors are shown explicitly; failed/refused/incomplete/unsafe advice is not saved or
+  silently replaced by a successful-looking AI result. A timeout may still incur
+  provider charges; inspect the provider dashboard before retrying.

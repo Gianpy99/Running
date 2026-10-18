@@ -7,6 +7,12 @@ pipeline {
     agent any
     options { disableConcurrentBuilds() }
     triggers { pollSCM('H/3 * * * *') }
+    parameters {
+        booleanParam(name: 'ENABLE_AI_COACHING', defaultValue: params.ENABLE_AI_COACHING ?: false,
+                     description: 'Enable paid, manual OpenAI requests. Requires running-coach-openai-api-key Secret text.')
+        string(name: 'COACH_OPENAI_MODEL', defaultValue: params.COACH_OPENAI_MODEL ?: 'gpt-5-mini',
+               description: 'OpenAI model supporting Responses API Structured Outputs.')
+    }
 
     environment {
         IMAGE     = 'ai-running-coach:latest'
@@ -21,17 +27,27 @@ pipeline {
 
         stage('Deploy container') {
             steps {
-                withCredentials([string(credentialsId: 'running-coach-database-url', variable: 'DATABASE_URL')]) {
-                    sh '''
-                        docker rm -f $CONTAINER 2>/dev/null || true
-                        docker run -d \
-                            --name $CONTAINER \
-                            --restart unless-stopped \
-                            -p $HOST_PORT:8090 \
-                            -e DATABASE_URL="$DATABASE_URL" \
-                            -e COACH_AUTO_SEED=1 \
-                            $IMAGE
-                    '''
+                script {
+                    def secrets = [string(credentialsId: 'running-coach-database-url', variable: 'DATABASE_URL')]
+                    if (params.ENABLE_AI_COACHING) {
+                        secrets.add(string(credentialsId: 'running-coach-openai-api-key', variable: 'OPENAI_API_KEY'))
+                    }
+                    withEnv(["OPENAI_API_KEY=", "OPENAI_MODEL=${params.COACH_OPENAI_MODEL ?: 'gpt-5-mini'}"]) {
+                        withCredentials(secrets) {
+                            sh '''
+                                docker rm -f $CONTAINER 2>/dev/null || true
+                                docker run -d \
+                                    --name $CONTAINER \
+                                    --restart unless-stopped \
+                                    -p $HOST_PORT:8090 \
+                                    -e DATABASE_URL \
+                                    -e OPENAI_API_KEY \
+                                    -e OPENAI_MODEL \
+                                    -e COACH_AUTO_SEED=1 \
+                                    $IMAGE
+                            '''
+                        }
+                    }
                 }
             }
         }
