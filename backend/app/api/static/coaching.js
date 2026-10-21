@@ -233,7 +233,9 @@ function showCoachingReview(content, review, onBack) {
   document.getElementById('coachDialogTitle').textContent = title;
   content.innerHTML = `<div class="coach-actions"><button type="button" class="upload-btn" id="coachBackToSaved">
     Back to saved coaching</button><button type="button" class="upload-btn" id="coachUpdateAdvice">
-    ${review.kind === 'next_training' ? 'Update this training' : 'Add details / update feedback'}</button></div>
+    ${review.kind === 'next_training' ? 'Update this training' : 'Add details / update feedback'}</button>
+    ${review.output.next_session ? `<button type="button" class="upload-btn" id="coachEasyView">
+      Easy view - large text</button>` : ''}</div>
     <p class="hint">The original stays saved. Updating uses the latest context and your current time window,
       not the old response's assumptions or recovery snapshot.</p>${renderCoaching(review)}
     ${review.output.questions?.length ? `<button type="button" class="upload-btn" id="coachAnswerQuestions">
@@ -243,8 +245,72 @@ function showCoachingReview(content, review, onBack) {
   const update = () => openCoach(review.kind, review.workout_id, review);
   content.querySelector('#coachUpdateAdvice').addEventListener('click', update);
   content.querySelector('#coachAnswerQuestions')?.addEventListener('click', update);
+  content.querySelector('#coachEasyView')?.addEventListener('click', () =>
+    showCoachingEasyView(content, review, () => {
+      showCoachingReview(content, review, onBack);
+      content.querySelector('#coachEasyView').focus({preventScroll: true});
+    }));
   content.querySelector('#coachReaderTop').addEventListener('click', () => { content.scrollTop = 0; });
   content.scrollTop = 0;
+  content.focus({preventScroll: true});
+}
+
+function showCoachingEasyView(content, review, onBack) {
+  const plan = review.output.next_session;
+  const readiness = review.feature_snapshot.safety.readiness;
+  const hasSteps = ['easy', 'train'].includes(plan.action) && plan.steps.length > 0;
+  let stepIndex = 0;
+  content.innerHTML = `<section class="coach-run-view">
+    <div class="coach-run-toolbar">
+      <button type="button" class="upload-btn" id="coachExitEasy">Back to guidance</button>
+      <button type="button" class="upload-btn" id="coachLargeText" aria-pressed="false">Larger text</button>
+    </div>
+    <div class="coach-run-details" tabindex="0" aria-label="Workout guidance">
+      <p>${coachEscape(plan.date)} | ${coachEscape(plan.title)} | ${coachEscape(plan.duration_min)} min total</p>
+      <p class="warn">Saved readiness: ${coachEscape(readiness.level)}.
+        ${coachEscape(readiness.recommendation)} Recheck recovery before running; this is not a live assessment.</p>
+      <div id="coachRunStep" aria-live="polite" aria-atomic="true"></div>
+      ${hasSteps ? '<p>Manual guidance only: no timer or automatic phase changes. Pause somewhere safe to use the controls.</p>' : ''}
+    </div>
+    ${hasSteps ? `<nav class="coach-run-navigation" aria-label="Workout phases">
+      <button type="button" class="upload-btn" id="coachPreviousStep">Previous</button>
+      <button type="button" class="upload-btn" id="coachNextStep">Next phase</button>
+    </nav>` : ''}
+    </section>`;
+  const view = content.querySelector('.coach-run-view');
+  const step = content.querySelector('#coachRunStep');
+  const previous = content.querySelector('#coachPreviousStep');
+  const next = content.querySelector('#coachNextStep');
+  function renderStep() {
+    if (hasSteps) {
+      const current = plan.steps[stepIndex];
+      step.innerHTML = `<p>Phase ${stepIndex + 1} of ${plan.steps.length}</p>
+        <h2>${coachEscape(current.phase)}</h2>
+        <p class="coach-run-duration">${coachEscape(current.duration_min)} min</p>
+        <p class="coach-run-target">${coachEscape(current.target)}</p>`;
+      previous.disabled = stepIndex === 0;
+      next.disabled = stepIndex === plan.steps.length - 1;
+    } else {
+      step.innerHTML = `<h2>${plan.action === 'rest' ? 'Rest' : 'Clarification needed'}</h2>
+        <p class="coach-run-target">${coachEscape(plan.rationale)}</p>
+        ${review.output.questions?.length ? `<ul>${review.output.questions.map(question =>
+          `<li>${coachEscape(question)}</li>`).join('')}</ul>` : ''}`;
+    }
+    content.querySelector('.coach-run-details').scrollTop = 0;
+  }
+  previous?.addEventListener('click', () => {
+    if (stepIndex > 0) { stepIndex--; renderStep(); }
+  });
+  next?.addEventListener('click', () => {
+    if (stepIndex < plan.steps.length - 1) { stepIndex++; renderStep(); }
+  });
+  content.querySelector('#coachExitEasy').addEventListener('click', onBack);
+  content.querySelector('#coachLargeText').addEventListener('click', event => {
+    const larger = view.classList.toggle('coach-run-larger');
+    event.currentTarget.setAttribute('aria-pressed', String(larger));
+    event.currentTarget.textContent = larger ? 'Standard large text' : 'Larger text';
+  });
+  renderStep();
   content.focus({preventScroll: true});
 }
 

@@ -62,6 +62,13 @@ all races. Default athlete values used by analytics are not treated as confirmed
   or switch to workout feedback. Older results are paged; reopening never calls OpenAI.
   The dedicated reader puts the proposed session first and keeps its close control
   visible while the response scrolls. Saved readiness is historical: recheck before running.
+- In next-training advice, choose **Easy view - large text** for an edge-to-edge,
+  high-contrast reader. It shows one phase with its duration and target at a time,
+  large **Previous / Next phase** controls and a **Larger text** option. Return with
+  **Back to guidance** or close as usual. Rest and clarification advice remain rest
+  and clarification, not runnable workouts. Navigation is manual: there is no timer,
+  automatic progression or extra AI call. Recheck recovery before training and pause
+  somewhere safe before interacting with the screen.
 - The usual training window is **06:00-07:00**, with a **60-minute maximum for the whole
   session**, including warmup, recovery intervals and cooldown. The coach chooses the
   duration needed, not a fixed 30-minute run. Set a shorter per-request limit when needed;
