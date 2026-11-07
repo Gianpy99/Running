@@ -64,8 +64,8 @@ all races. Default athlete values used by analytics are not treated as confirmed
   visible while the response scrolls. Saved readiness is historical: recheck before running.
 - In next-training advice, choose **Easy view - large text** for an edge-to-edge,
   high-contrast reader. It shows one phase with its duration and target at a time,
-  large **Previous / Next phase** controls and a **Larger text** option. Return with
-  **Back to guidance** or close as usual. Rest and clarification advice remain rest
+  large **Previous / Next phase** controls at the top. **Back to guidance** and
+  **Larger text** stay at the bottom. Return to guidance or close as usual. Rest and clarification advice remain rest
   and clarification, not runnable workouts. Navigation is manual: there is no timer,
   automatic progression or extra AI call. Recheck recovery before training and pause
   somewhere safe before interacting with the screen.
@@ -79,6 +79,20 @@ all races. Default athlete values used by analytics are not treated as confirmed
   questions & update advice**, enter your answers and a fresh check-in, then preview.
   Copying is free; generating a revised API response is a new explicit paid request.
   The original remains saved alongside its revision.
+- After running, reopen the advice and choose **Training done - log effort**. Confirm
+  the actual start (your device's local time), duration, setting, RPE and any changes.
+  The run is immediately saved and included in training history; no API call is made.
+  Watch distance, HR and pace stay unavailable, and the proposed phases are not assumed
+  completed. Choose **Training done - view workout**, then **Attach TCX to this run**
+  when you download the file. The header upload also offers a **TCX destination** selector
+  for pending runs. Attachment replaces the reported metrics while preserving the run's
+  identity, effort, notes and saved feedback. Repeated completion does not create another run.
+- Prompt previews now separate **Copy/paste for ChatGPT** (readable-answer instructions,
+  no response schema) from the **exact API request** (compact evidence plus a validated
+  JSON schema). Both summarize recent runs instead of repeating full analytic documents;
+  weekly totals, safety, recovery, races, profile and athlete reports remain included.
+  The full evidence is saved locally for API provenance. Character count is shown;
+  unusually long user-entered notes/profile are retained, not silently cut.
 
 ### Session badges and effort
 

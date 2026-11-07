@@ -219,7 +219,7 @@ class _BaseStore:
 
     def list_workouts(self) -> list[dict]:
         rows = self._exec(
-            """SELECT id, source_file, start_time, duration_s, distance_m, session_type,
+            """SELECT id, source, source_file, start_time, duration_s, distance_m, session_type,
                       terrain, completion, avg_hr, avg_pace_s_per_km,
                       main_set_avg_pace_s_per_km, main_set_avg_hr, elevation_gain_m
                FROM workouts ORDER BY start_time"""

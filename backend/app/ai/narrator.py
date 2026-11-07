@@ -19,7 +19,7 @@ def build_feature_snapshot(analysis: dict) -> dict:
         "session_label": analysis.get("session_label") or describe_session(analysis),
         "terrain": analysis.get("terrain"),
         "completion": analysis.get("completion"),
-        "distance_km": round((m.get("distance_m") or 0) / 1000.0, 2),
+        "distance_km": None if analysis.get("awaiting_tcx") else round((m.get("distance_m") or 0) / 1000.0, 2),
         "duration_min": round((m.get("duration_s") or 0) / 60.0, 1),
         "avg_hr": m.get("avg_hr"),
         "avg_pace_s_per_km": m.get("avg_pace_s_per_km"),
@@ -57,9 +57,10 @@ def _pace_str(seconds: float | None) -> str:
 def explain_session(analysis: dict) -> dict:
     """Produce a structured session narrative from evidence (PRD §12, §26)."""
     snap = build_feature_snapshot(analysis)
+    distance = f"{snap['distance_km']} km" if snap["distance_km"] is not None else "distance awaiting TCX"
     parts = [
         f"{snap['session_label']['label']} session on {snap['terrain']} terrain: "
-        f"{snap['distance_km']} km in {snap['duration_min']} min "
+        f"{distance} in {snap['duration_min']} min "
         f"(avg pace {_pace_str(snap['avg_pace_s_per_km'])}, avg HR "
         f"{snap['avg_hr'] if snap['avg_hr'] else 'n/a'} bpm)."
     ]

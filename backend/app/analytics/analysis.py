@@ -40,6 +40,7 @@ def analyse_workout(workout: Workout, athlete: Athlete, rpe: int | None = None) 
         "workout_id": workout.id,
         "analysis_version": ANALYSIS_VERSION,
         "source_file": workout.source_file,
+        "awaiting_tcx": workout.source == "manual_completed",
         "start_time": workout.start_time.isoformat(),
         "session_type": workout.session_type.value,
         "terrain": infer_terrain(workout).value,
@@ -54,7 +55,7 @@ def analyse_workout(workout: Workout, athlete: Athlete, rpe: int | None = None) 
         "treadmill_effort": treadmill_effort(workout),
         "aerobic_efficiency": aerobic_efficiency(workout),
         "hr_drift": hr_drift(workout),
-        "training_load": training_load(workout, athlete, rpe=rpe),
+        "training_load": training_load(workout, athlete, rpe=rpe if rpe is not None else workout.reported_rpe),
         "hr_quality": {
             "flagged_samples": hr_quality.flagged_samples,
             "total_samples": hr_quality.total_samples,

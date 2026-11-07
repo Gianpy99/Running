@@ -51,9 +51,13 @@ def elevation_profile(workout: Workout) -> dict:
 
 def infer_terrain(workout: Workout) -> TerrainType:
     """Classify terrain from GPS presence and elevation gain (§9.4, §14)."""
+    if workout.source == "manual_completed":
+        return workout.terrain
     pts = workout.trackpoints
     has_gps = any(p.latitude is not None for p in pts)
     if not has_gps:
+        if workout.reported_setting == "outdoor":
+            return TerrainType.UNKNOWN
         return TerrainType.TREADMILL
     prof = elevation_profile(workout)
     gain = prof.get("elevation_gain_m") or 0.0
@@ -174,4 +178,3 @@ def treadmill_effort(workout: Workout) -> dict:
         "incline_effort_pct": round((raw_pace - eq_pace) / raw_pace * 100.0, 1),
         "model": {"grade_cost_up": GRADE_COST_UP},
     }
-

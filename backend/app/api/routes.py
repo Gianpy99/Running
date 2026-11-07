@@ -13,7 +13,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Literal
 
-from fastapi import Body, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from ..ai import explain_session, recommend_next_session
 from ..ai.context import build_context, context_hash
 from ..ai.provider import CoachingError, configured_model, preview_context, request_coaching, review_id
-from ..ai.schemas import CoachRequest, CoachingProfile, RaceInput, WorkoutFeedback
+from ..ai.schemas import CoachRequest, CoachingProfile, CompletedTraining, RaceInput, WorkoutFeedback
 from ..analytics.analysis import analyse_workout
 from ..analytics.terrain import infer_terrain
 from ..ingestion import (
@@ -30,7 +30,8 @@ from ..ingestion import (
     parse_treadmill_blocks,
     parse_treadmill_log,
 )
-from ..models import Athlete, RecoveryContext
+from ..models import Athlete, RecoveryContext, Workout
+from ..models.enums import CompletionStatus, TerrainType
 from ..persistence import open_store
 from ..persistence.store import _BaseStore
 from ..services.body_trends import weight_trend
@@ -193,7 +194,9 @@ def create_app(db_path: str | None = None) -> FastAPI:
         return report
 
     @app.post("/workouts/upload")
-    async def upload_workout(file: UploadFile = File(...)) -> dict:
+    async def upload_workout(
+        file: UploadFile = File(...), workout_id: str | None = Form(None),
+    ) -> dict:
         """Ingest a single uploaded TCX file and persist it to the store (PRD §5, §27)."""
         raw = await file.read()
         try:
@@ -206,8 +209,37 @@ def create_app(db_path: str | None = None) -> FastAPI:
             raise HTTPException(422, f"could not parse TCX: {exc}")
         workout.terrain = infer_terrain(workout)
         workout.session_type = classify_session(workout)
-        analysis = analyse_workout(workout, ATHLETE)
         with store() as s:
+            reported = s.get_workout(workout_id) if workout_id else None
+            if workout_id and reported is None:
+                raise HTTPException(404, "workout not found")
+            if reported and not reported.coaching_review_id:
+                raise HTTPException(422, "Choose a workout logged from saved training advice.")
+            if reported is None:
+                matches = []
+                for row in s.list_workouts():
+                    start = datetime.fromisoformat(row["start_time"])
+                    start = start if start.tzinfo else start.replace(tzinfo=timezone.utc)
+                    if abs((start - workout.start_time).total_seconds()) <= 120:
+                        candidate = s.get_workout(row["id"])
+                        if candidate and candidate.coaching_review_id:
+                            matches.append(candidate)
+                if len(matches) > 1:
+                    raise HTTPException(409, "Several logged runs match. Select the intended workout explicitly.")
+                reported = matches[0] if matches else None
+            if reported:
+                if workout.id != reported.id and s.get_workout(workout.id):
+                    raise HTTPException(409, "This TCX is already stored as another workout. Resolve that duplicate before attaching.")
+                # Keep the report's identity so its notes, feedback and saved AI reviews survive.
+                workout.id = reported.id
+                workout.coaching_review_id = reported.coaching_review_id
+                workout.reported_rpe = reported.reported_rpe
+                workout.reported_setting = reported.reported_setting
+                workout.notes = reported.notes
+                workout.completion = CompletionStatus.COMPLETE
+                workout.terrain = infer_terrain(workout)
+                workout.session_type = classify_session(workout)
+            analysis = analyse_workout(workout, ATHLETE)
             existing = s.get_workout(workout.id) is not None
             # A re-import whose id drifted (e.g. an earlier edit truncated the seconds)
             # would otherwise leave a stale duplicate; treat a near-identical start as the
@@ -226,6 +258,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
             "distance_km": round((workout.distance_m or 0) / 1000.0, 2),
             "duration_min": round((workout.duration_s or 0) / 60.0, 1),
             "avg_hr": workout.avg_hr,
+            "attached_to_report": reported is not None,
         }
 
     @app.post("/workouts/treadmill")
@@ -529,10 +562,17 @@ def create_app(db_path: str | None = None) -> FastAPI:
     @app.put("/workouts/{workout_id}/feedback")
     def save_workout_feedback(workout_id: str, feedback: WorkoutFeedback) -> dict:
         with store() as s:
-            if s.get_workout(workout_id) is None:
-                raise HTTPException(404, "workout not found")
-            s.save_workout_feedback(workout_id, feedback.model_dump())
+            persist_feedback(s, workout_id, feedback)
         return {"status": "ok"}
+
+    def persist_feedback(s: _BaseStore, workout_id: str, feedback: WorkoutFeedback) -> None:
+        workout = s.get_workout(workout_id)
+        if workout is None:
+            raise HTTPException(404, "workout not found")
+        s.save_workout_feedback(workout_id, feedback.model_dump())
+        if workout.coaching_review_id:
+            workout.reported_rpe = feedback.perceived_exertion
+            s.upsert_workout(workout, analyse_workout(workout, ATHLETE))
 
     @app.put("/ai/coaching/profile")
     def put_coaching_profile(profile: CoachingProfile) -> dict:
@@ -573,9 +613,9 @@ def create_app(db_path: str | None = None) -> FastAPI:
             result = request_coaching(context, model)
             with store() as s:
                 if payload.purpose == "workout_feedback" and payload.workout_id:
-                    s.save_workout_feedback(payload.workout_id, {
-                        "notes": payload.notes, "perceived_exertion": payload.perceived_exertion,
-                    })
+                    persist_feedback(s, payload.workout_id, WorkoutFeedback(
+                        notes=payload.notes, perceived_exertion=payload.perceived_exertion,
+                    ))
                 s.save_coach_review(result)
             return {**result, "cached": False}
         except CoachingError as exc:
@@ -590,12 +630,53 @@ def create_app(db_path: str | None = None) -> FastAPI:
         limit: int = Query(10, ge=1, le=50), offset: int = Query(0, ge=0),
     ) -> list[dict]:
         with store() as s:
-            return s.list_coach_reviews(limit=limit, workout_id=workout_id, kind=kind, offset=offset)
+            return [with_completion(s, review) for review in
+                    s.list_coach_reviews(limit=limit, workout_id=workout_id, kind=kind, offset=offset)]
+
+    def with_completion(s: _BaseStore, review: dict) -> dict:
+        completed = s.get_workout("completed-" + review["id"])
+        if completed is None:
+            return review
+        return {**review, "completed_workout": {
+            "workout_id": completed.id,
+            "start_time": completed.start_time.isoformat(),
+            "awaiting_tcx": completed.source == "manual_completed",
+        }}
+
+    @app.post("/ai/coaching/history/{review_id}/complete")
+    def complete_training(review_id: str, payload: CompletedTraining) -> dict:
+        if payload.start_time > datetime.now(timezone.utc):
+            raise HTTPException(422, "A completed run cannot start in the future.")
+        with store() as s:
+            review = s.get_coach_review(review_id)
+            if review is None:
+                raise HTTPException(404, "saved coaching response not found")
+            plan = review["output"].get("next_session")
+            if review["kind"] != "next_training" or not plan or plan["action"] not in ("easy", "train"):
+                raise HTTPException(422, "Only running advice can be marked as a completed run.")
+            wid = "completed-" + review_id
+            if s.get_workout(wid) is None:
+                workout = Workout(
+                    id=wid, source="manual_completed", start_time=payload.start_time,
+                    duration_s=payload.duration_min * 60, notes=payload.notes,
+                    coaching_review_id=review_id, reported_rpe=payload.perceived_exertion,
+                    reported_setting=payload.setting,
+                    terrain=TerrainType.TREADMILL if payload.setting == "treadmill" else TerrainType.UNKNOWN,
+                    completion=CompletionStatus.COMPLETE,
+                )
+                # The advice's phases are not measured or confirmed execution.
+                s.upsert_workout(workout, analyse_workout(workout, ATHLETE))
+                s.save_workout_feedback(wid, {
+                    "notes": payload.notes, "perceived_exertion": payload.perceived_exertion,
+                })
+            return with_completion(s, review)
 
     @app.get("/ai/coaching/history/{review_id}")
     def get_coaching_review(review_id: str) -> dict:
         with store() as s:
             review = s.get_coach_review(review_id)
+            if review is not None:
+                review = with_completion(s, review)
         if review is None:
             raise HTTPException(404, "saved coaching response not found")
         return review
@@ -639,6 +720,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
                     "id": w["id"],
                     "start_time": w["start_time"],
                     "session_type": w["session_type"],
+                    "awaiting_tcx": w["source"] == "manual_completed",
                     "session_label": label,
                     "terrain": w["terrain"],
                     "distance_km": round((w["distance_m"] or 0) / 1000.0, 2),

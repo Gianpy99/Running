@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -31,6 +32,9 @@ class Workout(BaseModel):
     terrain: TerrainType = TerrainType.UNKNOWN
     completion: CompletionStatus = CompletionStatus.UNKNOWN
     notes: str | None = None
+    coaching_review_id: str | None = None
+    reported_rpe: int | None = Field(default=None, ge=1, le=10)
+    reported_setting: Literal["treadmill", "outdoor"] | None = None
     # Manually entered treadmill metadata (PRD §15) — user-reported, not measured.
     treadmill_speed_mph: float | None = None
     treadmill_incline_pct: float | None = None

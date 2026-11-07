@@ -76,6 +76,10 @@ test('easy view uses saved phases, escapes text and supports bounded manual navi
   assert.match(content.innerHTML, /Saved readiness: amber/);
   assert.match(content.innerHTML, /not a live assessment/);
   assert.match(content.innerHTML, /no timer or automatic phase changes/);
+  assert.ok(content.innerHTML.indexOf('id="coachPreviousStep"') < content.innerHTML.indexOf('class="coach-run-details"'));
+  assert.ok(content.innerHTML.indexOf('id="coachNextStep"') < content.innerHTML.indexOf('class="coach-run-details"'));
+  assert.ok(content.innerHTML.indexOf('id="coachExitEasy"') > content.innerHTML.indexOf('class="coach-run-details"'));
+  assert.ok(content.innerHTML.indexOf('id="coachLargeText"') > content.innerHTML.indexOf('class="coach-run-details"'));
   const step = get('#coachRunStep');
   assert.match(step.innerHTML, /Phase 1 of 3/);
   assert.match(step.innerHTML, /5 min/);
@@ -138,4 +142,25 @@ test('workout feedback without a next session has no easy-view entry', () => {
   saved.output.next_session = null;
   context.showCoachingReview(content, saved, () => {});
   assert.doesNotMatch(content.innerHTML, /id="coachEasyView"/);
+  assert.doesNotMatch(content.innerHTML, /id="coachCompleteTraining"/);
+});
+
+test('running advice offers completion while rest and clarification do not', () => {
+  for (const action of ['train', 'easy', 'rest', 'ask']) {
+    const {context, content} = setup();
+    context.showCoachingReview(content, review(action), () => {});
+    if (['train', 'easy'].includes(action)) assert.match(content.innerHTML, /Training done - log effort/);
+    else assert.doesNotMatch(content.innerHTML, /id="coachCompleteTraining"/);
+  }
+});
+
+test('completed advice shows pending or attached status without another completion', () => {
+  for (const awaiting of [true, false]) {
+    const {context, content} = setup();
+    const saved = review();
+    saved.completed_workout = {workout_id: 'completed-test', start_time: saved.generated_at, awaiting_tcx: awaiting};
+    context.showCoachingReview(content, saved, () => {});
+    assert.match(content.innerHTML, /Training done - view workout/);
+    assert.match(content.innerHTML, awaiting ? /TCX still to attach/ : /TCX attached/);
+  }
 });

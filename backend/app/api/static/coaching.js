@@ -7,7 +7,9 @@ async function coachFetch(url, method='GET', data) {
   const response = await fetch(url, {
     method, cache: 'no-store',
     ...(data === undefined ? {} : {
-      headers: {'Content-Type':'application/json'}, body: JSON.stringify(data)
+      ...(data instanceof FormData ? {body: data} : {
+        headers: {'Content-Type':'application/json'}, body: JSON.stringify(data)
+      })
     })
   });
   const result = await response.json();
@@ -235,7 +237,12 @@ function showCoachingReview(content, review, onBack) {
     Back to saved coaching</button><button type="button" class="upload-btn" id="coachUpdateAdvice">
     ${review.kind === 'next_training' ? 'Update this training' : 'Add details / update feedback'}</button>
     ${review.output.next_session ? `<button type="button" class="upload-btn" id="coachEasyView">
-      Easy view - large text</button>` : ''}</div>
+      Easy view - large text</button>` : ''}
+    ${review.kind === 'next_training' && ['easy', 'train'].includes(review.output.next_session?.action)
+      ? `<button type="button" class="upload-btn" id="coachCompleteTraining">
+        ${review.completed_workout ? 'Training done - view workout' : 'Training done - log effort'}</button>` : ''}</div>
+    ${review.completed_workout ? `<p class="hint">Training done: ${coachEscape(new Date(review.completed_workout.start_time).toLocaleString())}.
+      ${review.completed_workout.awaiting_tcx ? 'Effort saved; TCX still to attach.' : 'TCX attached.'}</p>` : ''}
     <p class="hint">The original stays saved. Updating uses the latest context and your current time window,
       not the old response's assumptions or recovery snapshot.</p>${renderCoaching(review)}
     ${review.output.questions?.length ? `<button type="button" class="upload-btn" id="coachAnswerQuestions">
@@ -244,6 +251,12 @@ function showCoachingReview(content, review, onBack) {
   content.querySelector('#coachBackToSaved').addEventListener('click', onBack);
   const update = () => openCoach(review.kind, review.workout_id, review);
   content.querySelector('#coachUpdateAdvice').addEventListener('click', update);
+  content.querySelector('#coachCompleteTraining')?.addEventListener('click', () => {
+    if (review.completed_workout) openWorkout(review.completed_workout.workout_id);
+    else showCoachCompletion(content, review, () => showCoachingReview(content, review, onBack), saved => {
+      showCoachingReview(content, saved, onBack);
+    });
+  });
   content.querySelector('#coachAnswerQuestions')?.addEventListener('click', update);
   content.querySelector('#coachEasyView')?.addEventListener('click', () =>
     showCoachingEasyView(content, review, () => {
@@ -261,10 +274,10 @@ function showCoachingEasyView(content, review, onBack) {
   const hasSteps = ['easy', 'train'].includes(plan.action) && plan.steps.length > 0;
   let stepIndex = 0;
   content.innerHTML = `<section class="coach-run-view">
-    <div class="coach-run-toolbar">
-      <button type="button" class="upload-btn" id="coachExitEasy">Back to guidance</button>
-      <button type="button" class="upload-btn" id="coachLargeText" aria-pressed="false">Larger text</button>
-    </div>
+    ${hasSteps ? `<nav class="coach-run-navigation" aria-label="Workout phases">
+      <button type="button" class="upload-btn" id="coachPreviousStep">Previous</button>
+      <button type="button" class="upload-btn" id="coachNextStep">Next phase</button>
+    </nav>` : ''}
     <div class="coach-run-details" tabindex="0" aria-label="Workout guidance">
       <p>${coachEscape(plan.date)} | ${coachEscape(plan.title)} | ${coachEscape(plan.duration_min)} min total</p>
       <p class="warn">Saved readiness: ${coachEscape(readiness.level)}.
@@ -272,10 +285,10 @@ function showCoachingEasyView(content, review, onBack) {
       <div id="coachRunStep" aria-live="polite" aria-atomic="true"></div>
       ${hasSteps ? '<p>Manual guidance only: no timer or automatic phase changes. Pause somewhere safe to use the controls.</p>' : ''}
     </div>
-    ${hasSteps ? `<nav class="coach-run-navigation" aria-label="Workout phases">
-      <button type="button" class="upload-btn" id="coachPreviousStep">Previous</button>
-      <button type="button" class="upload-btn" id="coachNextStep">Next phase</button>
-    </nav>` : ''}
+    <div class="coach-run-toolbar">
+      <button type="button" class="upload-btn" id="coachExitEasy">Back to guidance</button>
+      <button type="button" class="upload-btn" id="coachLargeText" aria-pressed="false">Larger text</button>
+    </div>
     </section>`;
   const view = content.querySelector('.coach-run-view');
   const step = content.querySelector('#coachRunStep');
@@ -314,6 +327,71 @@ function showCoachingEasyView(content, review, onBack) {
   content.focus({preventScroll: true});
 }
 
+function showCoachCompletion(content, review, onBack, onSaved) {
+  const plan = review.output.next_session;
+  const start = new Date(Date.now() - plan.duration_min * 60000);
+  const localStart = new Date(start.getTime() - start.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  content.innerHTML = `<h3>Training done - log your run</h3>
+    <p class="hint">Confirm what you actually ran, not just the advice. Duration is prefilled from the plan;
+      start time is estimated using your device's local timezone. Correct both before saving.
+      No watch metrics or completed phases are invented. No API call is made.</p>
+    <form id="coachCompletionForm" class="coach-form">
+      <label>Actual start (device local time)<input name="start_time" type="datetime-local" required value="${localStart}"></label>
+      <label>Actual whole-run duration (minutes)<input name="duration_min" type="number" min="0.1" max="1440"
+        step="any" required value="${coachEscape(plan.duration_min)}"></label>
+      <label>Where did you run?<select name="setting" required><option value="">Choose setting</option>
+        <option value="treadmill">Treadmill</option><option value="outdoor">Outdoor</option></select></label>
+      <label>Effort (RPE 1-10)<input name="perceived_exertion" type="number" min="1" max="10" step="1" required></label>
+      <label>Run notes / changes from the advice<textarea name="notes" maxlength="4000"></textarea></label>
+      <div class="coach-actions"><button class="upload-btn" type="submit">Save completed run & effort</button>
+        <button class="upload-btn" type="button" id="coachCancelCompletion">Back to guidance</button></div>
+      <p id="coachCompletionStatus" role="status"></p>
+    </form>`;
+  content.querySelector('#coachCancelCompletion').addEventListener('click', onBack);
+  const form = content.querySelector('#coachCompletionForm');
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const button = form.querySelector('button[type=submit]');
+    const status = content.querySelector('#coachCompletionStatus');
+    button.disabled = true;
+    try {
+      const fields = Object.fromEntries(new FormData(form));
+      const saved = await coachFetch(`/ai/coaching/history/${encodeURIComponent(review.id)}/complete`, 'POST', {
+        start_time: new Date(fields.start_time).toISOString(),
+        duration_min: Number(fields.duration_min), setting: fields.setting,
+        perceived_exertion: Number(fields.perceived_exertion), notes: fields.notes
+      });
+      await init();
+      if (content.isConnected) onSaved(saved);
+    } catch (error) { coachStatus(status, error.message, true); }
+    finally { button.disabled = false; }
+  });
+  content.scrollTop = 0;
+  content.focus({preventScroll: true});
+}
+
+function attachCoachTcx(workoutId) {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = '.tcx';
+  input.addEventListener('change', async () => {
+    if (!input.files.length) return;
+    const button = document.getElementById('attachCoachTcxBtn');
+    const status = document.getElementById('attachCoachTcxStatus');
+    button.disabled = true;
+    try {
+      const data = new FormData();
+      data.append('file', input.files[0]);
+      data.append('workout_id', workoutId);
+      coachStatus(status, 'Attaching watch data...');
+      await coachFetch('/workouts/upload', 'POST', data);
+      await init();
+      if (status.isConnected) await openWorkout(workoutId);
+    } catch (error) { coachStatus(status, error.message, true); }
+    finally { button.disabled = false; }
+  });
+  input.click();
+}
+
 async function openSavedCoaching(kind='next_training', workoutId=null, offset=0) {
   const content = coachModal('Saved coaching');
   content.innerHTML = `<p class="hint">Successful API responses are saved automatically on this server.
@@ -348,7 +426,8 @@ async function openSavedCoaching(kind='next_training', workoutId=null, offset=0)
       const heading = document.createElement('strong');
       heading.textContent = plan ? `${plan.date} - ${plan.title} (${plan.duration_min} min)` : 'Workout feedback';
       const saved = document.createElement('small');
-      saved.textContent = `Saved ${new Date(review.generated_at).toLocaleString()} | ${review.model}`;
+      saved.textContent = `Saved ${new Date(review.generated_at).toLocaleString()} | ${review.model}` +
+        (review.completed_workout ? (review.completed_workout.awaiting_tcx ? ' | Done - awaiting TCX' : ' | Done - TCX attached') : '');
       entry.append(heading, saved);
       entry.addEventListener('click', async () => {
         entry.disabled = true;
@@ -380,7 +459,7 @@ async function openCoach(purpose='next_training', workoutId=null, followUp=null)
     ]);
     if (!content.isConnected) return;
     content.innerHTML = `<p class="hint">Two separate workflows. Previewing/copying is local and free.
-      Only "Ask via API" sends the displayed context to OpenAI and may incur API charges.
+      Only "Ask via API" sends the compact API context to OpenAI and may incur API charges.
       It cannot read your existing ChatGPT chat.</p>
       <div class="coach-actions"><button type="button" class="upload-btn" id="coachOpenSaved">
         Open saved coaching</button><span class="hint">API responses are saved automatically for later.</span></div>
@@ -442,8 +521,15 @@ async function openCoach(purpose='next_training', workoutId=null, followUp=null)
         <span id="coachRequestStatus" role="status"></span>
         <p id="coachSafety" class="warn" hidden></p>
       </form>
-      <details id="coachPreview" hidden><summary>Exact prompt, dated context and response schema</summary>
-        <textarea class="tm-text" id="coachPromptText" rows="18" readonly aria-label="Full coaching prompt"></textarea></details>
+      <details id="coachPreview" hidden><summary>Compact ChatGPT prompt and exact API request</summary>
+        <p class="hint">ChatGPT gets a readable-answer request without the API's JSON schema.
+          Both use compact recent runs plus weekly totals, not a full history dump.
+          Your profile, recovery, reports and race calendar are retained.</p>
+        <label>Copy/paste for ChatGPT<textarea class="tm-text" id="coachPromptText" rows="12" readonly
+          aria-label="Compact ChatGPT prompt"></textarea></label>
+        <details><summary>Exact API instructions, compact evidence and response schema</summary>
+          <textarea class="tm-text" id="coachApiPromptText" rows="12" readonly aria-label="Exact API prompt"></textarea></details>
+        </details>
       `;
     const form = content.querySelector('#coachRequestForm');
     const status = content.querySelector('#coachRequestStatus');
@@ -588,6 +674,7 @@ async function openCoach(purpose='next_training', workoutId=null, followUp=null)
         }
         previewPayload = payload; previewHash = preview.context_sha256;
         content.querySelector('#coachPromptText').value = preview.copy_prompt;
+        content.querySelector('#coachApiPromptText').value = preview.api_prompt;
         previewEl.hidden = false; previewEl.open = true;
         copy.disabled = false; generate.disabled = !preview.api_configured;
         const safety = content.querySelector('#coachSafety');
@@ -596,7 +683,9 @@ async function openCoach(purpose='next_training', workoutId=null, followUp=null)
           `${preview.context.safety.readiness.recommendation} ` +
           `Allowed proposals: ${preview.context.safety.allowed_actions.join(', ')}. ` +
           'Missing recovery remains unknown. Recheck before a future run.';
-        coachStatus(status, `${preview.prompt_version} | ${preview.model} | ${preview.context.as_of_date}. ` +
+        coachStatus(status, `${preview.prompt_version} | ${preview.model} | ${preview.context.as_of_date} | ` +
+          `${preview.copy_prompt_chars.toLocaleString()} ChatGPT characters. ` +
+          (preview.copy_prompt_chars > 16000 ? 'Long saved notes/profile remain intact; shorten them in Coach setup if needed. ' : '') +
           (preview.api_configured ? 'Review the context before sending.' :
             'API key not configured on the server; Copy for ChatGPT still works.'));
       } catch (error) { invalidate(); coachStatus(status, error.message, true); }
@@ -640,4 +729,6 @@ document.getElementById('savedCoachBtn').addEventListener('click', () => openSav
 document.addEventListener('click', event => {
   const button = event.target.closest('#workoutCoachBtn');
   if (button) openCoach('workout_feedback', decodeURIComponent(button.dataset.workoutId));
+  const attach = event.target.closest('#attachCoachTcxBtn');
+  if (attach) attachCoachTcx(decodeURIComponent(attach.dataset.workoutId));
 });

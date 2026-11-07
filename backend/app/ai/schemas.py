@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -72,6 +72,19 @@ class WorkoutFeedback(BaseModel):
 
     notes: str = Field(default="", max_length=4000)
     perceived_exertion: int | None = Field(default=None, ge=1, le=10)
+
+
+class CompletedTraining(WorkoutFeedback):
+    start_time: datetime
+    duration_min: float = Field(gt=0, le=1440, allow_inf_nan=False)
+    setting: Literal["treadmill", "outdoor"]
+
+    @field_validator("start_time")
+    @classmethod
+    def aware_start(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("The actual start time must include its timezone.")
+        return value
 
 
 class CoachRequest(WorkoutFeedback):

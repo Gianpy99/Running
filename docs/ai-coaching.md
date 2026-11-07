@@ -1,4 +1,4 @@
-# Coaching prompt and context, v3
+# Coaching prompt and context, v4
 
 This is a first, editable coaching contract, not a finished individualized season plan.
 The race calendar and athlete facts must be supplied by the athlete; the app cannot read
@@ -67,6 +67,33 @@ Reopening a result or changing history pages never calls OpenAI. The generated t
 and intended training date are shown; saved readiness is labeled as the assessment
 at generation time, not a new check-in. Old v1 responses are preserved unchanged when the
 prompt changes. They do not acquire later constraints retroactively.
+
+### Completing advice and attaching watch data
+
+Running advice (`easy`/`train`, not rest/clarification) offers **Training done - log effort**.
+Confirm actual start with an explicit timezone, whole-run duration, setting, RPE and notes.
+The device-local start and planned duration are editable suggestions, not measured facts.
+This creates one canonical `manual_completed` workout per saved response and stores its
+athlete feedback. Repeating completion returns that run without overwriting the report.
+The advice itself remains immutable. Future starts and invalid inputs are rejected.
+
+Reported duration contributes to history, weekly totals and the existing RPE/duration load
+model. No trackpoints, HR, pace, distance or execution of the advised phases are fabricated.
+The outdoor terrain is unknown until recorded; the reported setting remains explicit.
+The workout and saved advice show that the TCX is pending. Rest is not logged as a run.
+
+Open that workout and **Attach TCX to this run**, or choose it in the header's **TCX
+destination** selector. `POST /workouts/upload` accepts an optional multipart `workout_id`.
+Explicit attachment can correct the reported start time. Ordinary uploads/reuploads also
+recognize linked runs within the existing 120-second duplicate window. Multiple matches
+or a TCX already stored under a different identity return an explicit conflict rather
+than discard reports. Measured TCX metrics replace reported metrics, while the stable
+workout ID, notes, RPE and saved feedback survive. No API call occurs.
+
+API: `POST /ai/coaching/history/{review_id}/complete` accepts `start_time`,
+`duration_min`, `setting`, `perceived_exertion` and `notes`. History responses add
+`completed_workout` when the linked run exists. Deleting the run removes this completion
+state and its feedback using the existing workout deletion flow.
 
 ### Answering questions and revising a session
 
@@ -147,7 +174,26 @@ rather than automatically interpreting July as next year's July.
 
 ## Structured output and deterministic validation
 
-Both workflows return `analysis`, `observations`, `race_implications`, `uncertainties`,
+### Compact transmission versus full local evidence
+
+The full dated context remains the preview/hash source and the saved `feature_snapshot`.
+Both transmission paths use one shared compact projection: detailed selected-workout
+metrics, nonduplicated recent-run summaries (column names once, then aligned rows), full weekly totals, profile, races, recovery,
+safety, and verbatim athlete reports. Recent summaries omit repeated label prose and
+analytic machinery; null/empty session fields are not emitted. Missing remains unknown.
+Prior advice retains its proposal, uncertainties and questions instead of repeating its
+analysis. An explicit follow-up retains the full original output and all new answers.
+These reductions are disclosed in `summary_policy`; they do not silently cut athlete notes.
+
+The API sends compact JSON plus shortened instructions and the strict response schema.
+Preview includes `api_context`, the exact serialized `api_input`, and `api_prompt`;
+saved results also retain `provider_input` for reproducibility. ChatGPT copying uses
+the same evidence, readable-answer instructions and **no JSON response schema**. The
+character count is displayed. Very long profile/report text can still make a long prompt;
+the UI warns above 16,000 characters rather than silently remove important facts.
+This reduces redundant input, not a guarantee of improved model quality or billing.
+
+For the API, both workflows return `analysis`, `observations`, `race_implications`, `uncertainties`,
 `questions`, and `next_session`. For feedback `next_session` is null. For preparation:
 
 - `action`: `rest`, `easy`, `train`, or `ask`;
@@ -168,7 +214,7 @@ Local action restrictions:
 Structured validation cannot prove all natural-language coaching is medically sound,
 nor enforce every free-text preference. Proposals remain advisory. The readiness banner
 stays authoritative, and no AI plan is passed into execution or substituted for local
-rules. There is no implemented long-term periodization, acceptance tracking or automatic
+rules. There is no implemented long-term periodization, automatic execution or automatic
 race-result import.
 
 ## API, cost and provenance
@@ -182,6 +228,8 @@ race-result import.
 | `POST /ai/coaching/generate` | Requires the preview hash, then reuses a saved result or makes one paid API call |
 | `GET /ai/coaching/history` | Saved results, filtered by `kind` and/or `workout_id` before pagination (`limit` 1-50, default 10; `offset` nonnegative) |
 | `GET /ai/coaching/history/{id}` | Reopen one saved response, or 404 if absent |
+| `POST /ai/coaching/history/{id}/complete` | Log the actual run and effort without an API call |
+| `POST /workouts/upload` | Upload TCX, optionally attaching to a completed run via multipart `workout_id` |
 
 Requests include `purpose: "workout_feedback"` with `workout_id`, or
 `purpose: "next_training"` without a required workout ID. The latter uses the latest

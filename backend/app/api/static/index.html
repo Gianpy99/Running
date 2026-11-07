@@ -111,7 +111,8 @@
   .coach-run-details > p { font-size: 1rem; line-height: 1.5; }
   .coach-run-toolbar, .coach-run-navigation {
       display: flex; gap: .75rem; flex-wrap: wrap; flex-shrink: 0; }
-  .coach-run-navigation { border-top: 1px solid var(--line); padding-top: .75rem;
+  .coach-run-navigation { border-bottom: 1px solid var(--line); padding-bottom: .75rem; }
+  .coach-run-toolbar { border-top: 1px solid var(--line); padding-top: .75rem;
       padding-bottom: env(safe-area-inset-bottom, 0px); }
   .coach-run-view .upload-btn { min-height: 64px; padding: .8rem 1rem;
       font-size: 1.2rem; flex: 1; }
@@ -200,6 +201,9 @@
   <span class="sub">progress dashboard</span>
   <span class="spacer"></span>
   <button id="uploadBtn" class="upload-btn">＋ Upload run (.tcx)</button>
+  <label id="uploadTargetLabel" hidden>TCX destination
+    <select id="uploadTarget" aria-label="TCX destination"><option value="">New run / automatic match</option></select>
+  </label>
   <button id="treadmillBtn" class="upload-btn">🏃 Log treadmill</button>
   <button id="prepareCoachBtn" class="upload-btn">Prepare next training</button>
   <button id="savedCoachBtn" class="upload-btn">Saved coaching</button>
@@ -339,7 +343,7 @@ function workoutsTable(w) {
       <td>${fmtDate(x.start_time)}</td>
       <td>${sessionBadge(x.session_label, x.session_type)}</td>
       <td>${x.terrain.replace('_',' ')}</td>
-      <td>${x.distance_km}</td>
+      <td>${x.awaiting_tcx ? 'Pending TCX' : x.distance_km}</td>
       <td>${x.duration_min}</td>
       <td>${x.avg_hr ?? '—'}</td>
       <td>${fmtPace(x.avg_pace_s_per_km)}</td>
@@ -360,7 +364,7 @@ function drawCharts(d) {
   // distance + cumulative
   let cum = 0; const cumSeries = w.map(x => (cum += x.distance_km, +cum.toFixed(1)));
   lineChart('c_distance', labels, [
-    { type:'bar', label:'km', data: w.map(x=>x.distance_km), backgroundColor:'#3fb6ff88', yAxisID:'y' },
+    { type:'bar', label:'km', data: w.map(x=>x.awaiting_tcx ? null : x.distance_km), backgroundColor:'#3fb6ff88', yAxisID:'y' },
     { type:'line', label:'cumulative km', data: cumSeries, borderColor:'#35c46b', tension:.3, yAxisID:'y1', pointRadius:0 },
   ], { type:'bar', y1:true });
   // pace — whole session vs main set (treadmill warmup/cooldown excluded). Sessions with
@@ -419,13 +423,17 @@ async function openWorkout(id) {
       <h3 class="session-heading">${sessionBadge(analysis.session_label, analysis.session_type)}
         <span>${escapeHtml(analysis.terrain.replace('_',' '))}</span></h3>
       <div class="hint" style="color:var(--muted)">${new Date(analysis.start_time).toLocaleString()}</div>
-      ${analysis.terrain === 'treadmill' ? `<button class="upload-btn" style="margin:.4rem 0" onclick="editTreadmill('${id}')">✏️ Edit treadmill</button>` : ''}
+      ${analysis.terrain === 'treadmill' && !analysis.awaiting_tcx ? `<button class="upload-btn" style="margin:.4rem 0" onclick="editTreadmill('${id}')">✏️ Edit treadmill</button>` : ''}
       <button class="upload-btn" style="margin:.4rem 0 .4rem .4rem;background:var(--red);color:#fff" onclick="deleteWorkout('${id}')">🗑 Delete</button>
       <button id="workoutCoachBtn" data-workout-id="${encodeURIComponent(id)}" class="upload-btn" style="margin:.4rem">Get workout feedback</button>
+      ${analysis.awaiting_tcx ? `<p class="hint">Completed run and effort saved. Watch distance, HR and pace are not available yet.</p>
+        <button id="attachCoachTcxBtn" data-workout-id="${encodeURIComponent(id)}" class="upload-btn">Attach TCX to this run</button>
+        <p id="attachCoachTcxStatus" role="status"></p>` : ''}
       ${ai?.output?.narrative ? `<div class="narrative"><b>Local session summary</b><br>${ai.output.narrative}</div>` : ''}
       <div class="cards">
-        ${card('Distance', (m.distance_m/1000).toFixed(2), 'km')}
-        ${card('Moving', Math.round(m.moving_s/60), 'min')}
+        ${card('Distance', analysis.awaiting_tcx ? 'Pending TCX' : (m.distance_m/1000).toFixed(2), 'km')}
+        ${card(analysis.awaiting_tcx ? 'Reported duration' : 'Moving',
+          Math.round((analysis.awaiting_tcx ? m.duration_s : m.moving_s)/60), 'min')}
         ${card('Avg pace', fmtPace(m.avg_pace_s_per_km), '/km')}
         ${card('Avg HR', m.avg_hr ?? '—', 'bpm')}
         ${card('Elev gain', analysis.elevation.elevation_gain_m ?? '—', 'm')}
@@ -518,26 +526,32 @@ function setUploadStatus(msg, cls='') {
 
 async function uploadFiles(files) {
   const btn = document.getElementById('uploadBtn');
+  const target = document.getElementById('uploadTarget').value;
+  if (target && files.length !== 1) {
+    setUploadStatus('Select one TCX file to attach to the logged run.', 'err');
+    return;
+  }
   btn.disabled = true;
   let added = 0, skipped = 0, failed = 0;
   for (const file of files) {
     setUploadStatus(`Uploading ${file.name}…`);
     const fd = new FormData();
     fd.append('file', file);
+    if (target) fd.append('workout_id', target);
     try {
       const r = await fetch('/workouts/upload', { method: 'POST', body: fd });
-      if (!r.ok) { failed++; continue; }
       const res = await r.json();
+      if (!r.ok) throw new Error(res.detail || `Upload failed (${r.status})`);
       res.already_existed ? skipped++ : added++;
-    } catch (e) { failed++; }
+    } catch (e) { failed++; setUploadStatus(`${file.name}: ${e.message}`, 'err'); }
   }
   btn.disabled = false;
   const parts = [];
   if (added) parts.push(`${added} added`);
   if (skipped) parts.push(`${skipped} already present`);
   if (failed) parts.push(`${failed} failed`);
-  setUploadStatus(parts.join(', ') || 'Nothing to import', failed ? 'err' : 'ok');
-  if (added) await init();
+  if (!failed) setUploadStatus(parts.join(', ') || 'Nothing to import', 'ok');
+  if (added || skipped) await init();
 }
 
 document.getElementById('uploadBtn').addEventListener('click', () =>
@@ -937,6 +951,14 @@ async function init() {
   const app = document.getElementById('app');
   try {
     const d = await j('/summary');
+    const target = document.getElementById('uploadTarget');
+    const selected = target.value;
+    const pending = d.workouts.filter(workout => workout.awaiting_tcx);
+    document.getElementById('uploadTargetLabel').hidden = pending.length === 0;
+    target.innerHTML = '<option value="">New run / automatic match</option>' +
+      pending.slice().reverse().map(workout => `<option value="${escapeHtml(workout.id)}">
+        ${escapeHtml(new Date(workout.start_time).toLocaleString())} - ${workout.duration_min} min, awaiting TCX</option>`).join('');
+    target.value = pending.some(workout => workout.id === selected) ? selected : '';
     app.classList.remove('loading');
     if (!d.totals.workouts) {
       app.innerHTML = `<div class="panel"><h2>No running workouts yet</h2>

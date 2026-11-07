@@ -136,6 +136,70 @@ def test_recent_history_is_bounded_and_weekly_totals_are_not_truncated(store):
     assert sum(week["sessions"] for week in context["weekly_training"]) == 32
 
 
+def test_compact_prompts_reduce_history_without_losing_reports_safety_or_calendar(store):
+    for index in range(30):
+        _workout(store, f"run-{index}", index + 1)
+    store.save_workout_feedback("run-10", {"notes": "Reported calf discomfort.", "perceived_exertion": 8})
+    store.add_race("Main goal", "2027-07-04", 5000, 1500, True)
+    context = _context(store, concerning_pain=True)
+    preview = provider.preview_context(context)
+    compact = preview["api_context"]
+    assert compact["safety"] == context["safety"]
+    assert compact["safety"]["allowed_actions"] == ["rest", "ask"]
+    assert compact["profile"] == context["profile"]
+    assert compact["races"] == context["races"]
+    assert compact["weekly_training"] == context["weekly_training"]
+    assert compact["history_coverage"] == context["history_coverage"]
+    table = compact["recent_sessions"]
+    summaries = [dict(zip(table["columns"], row)) for row in table["rows"]]
+    assert len(summaries) == 20
+    assert compact["selected_session"]["workout_id"] == "latest"
+    old_report = next(run for run in summaries if run["workout_id"] == "run-10")
+    assert old_report["notes"] == "Reported calf discomfort." and old_report["rpe"] == 8
+    assert "RESPONSE JSON SCHEMA" not in preview["copy_prompt"]
+    assert "Reply with readable headings, not JSON" in preview["copy_prompt"]
+    assert len(preview["copy_prompt"]) < 16000
+    old_export_size = len(json.dumps(context, indent=2)) + len(json.dumps(CoachOutput.model_json_schema(), indent=2))
+    assert len(preview["copy_prompt"]) < old_export_size * 0.6
+    assert len(preview["api_input"]) < len(json.dumps(context)) * 0.8
+    assert preview["context_sha256"] == context_hash(context)
+    assert context["recent_sessions"][0]["features"]  # compaction did not mutate the snapshot
+
+
+def test_compaction_retains_long_reports_and_complete_requested_follow_up(store):
+    source = _saved_review(0)
+    store.save_coach_review(source)
+    notes = "Athlete's important context. " * 100
+    store.save_workout_feedback("old", {"notes": notes, "perceived_exertion": 6})
+    context = _context(store, follow_up_review_id=source["id"], follow_up_answers="New answers.")
+    compact = provider.compact_context(context)
+    assert compact["follow_up"] == context["follow_up"]
+    table = compact["recent_sessions"]
+    summaries = [dict(zip(table["columns"], row)) for row in table["rows"]]
+    assert next(run for run in summaries if run["workout_id"] == "old")["notes"] == notes
+
+
+def test_compact_export_size_with_real_regression_analytics():
+    from app.services.pipeline import process_raw_directory
+    from tests.conftest import REGRESSION_DIR
+
+    athlete = Athlete()
+    report = process_raw_directory(REGRESSION_DIR, athlete)
+    with SqliteStore(":memory:") as store:
+        for workout, analysis in report["_workouts"]:
+            store.upsert_workout(workout, analysis)
+        latest = max(workout.start_time for workout, _ in report["_workouts"])
+        context = build_context(store, CoachRequest(purpose="next_training"), athlete,
+                                latest + timedelta(hours=1))
+        preview = provider.preview_context(context)
+    assert len(context["recent_sessions"]) >= 10
+    old_size = (len(INSTRUCTIONS) + len(json.dumps(context, indent=2))
+                + len(json.dumps(CoachOutput.model_json_schema(), indent=2)))
+    assert len(preview["copy_prompt"]) < 16000
+    assert len(preview["copy_prompt"]) < old_size * 0.3
+    assert len(preview["api_input"]) < len(json.dumps(context)) * 0.4
+
+
 def test_load_windows_use_calendar_day_boundaries_and_exclude_future_training(store):
     for age in (6, 7, 27, 28, 83, 84):
         _workout(store, f"boundary-{age}", age)
@@ -290,7 +354,9 @@ def test_api_response_is_saved_cached_and_provenance_is_complete(client, store, 
     assert sent["store"] is False
     assert sent["text"]["format"]["strict"] is True
     assert sent["max_output_tokens"] == 6000
-    assert json.loads(sent["input"]) == preview["context"]
+    assert json.loads(sent["input"]) == preview["api_context"]
+    assert sent["input"] == preview["api_input"]
+    assert review["provider_input"] == preview["api_context"]
     history = client.get("/ai/coaching/history?workout_id=latest").json()
     assert len(history) == 1
     assert history[0]["id"] == review["id"]
