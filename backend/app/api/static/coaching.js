@@ -341,6 +341,9 @@ function showCoachCompletion(content, review, onBack, onSaved) {
         step="any" required value="${coachEscape(plan.duration_min)}"></label>
       <label>Where did you run?<select name="setting" required><option value="">Choose setting</option>
         <option value="treadmill">Treadmill</option><option value="outdoor">Outdoor</option></select></label>
+      <label id="coachTreadmillPhases" hidden>Treadmill phases you ran (one per line, e.g. "20 min at 6.2mph with 1%")
+        <textarea name="treadmill_description" maxlength="4000" rows="5">${coachEscape((plan.steps || [])
+          .map(step => `${step.duration_min} min ${step.phase} at ${step.target}`).join('\n'))}</textarea></label>
       <label>Effort (RPE 1-10)<input name="perceived_exertion" type="number" min="1" max="10" step="1" required></label>
       <label>Run notes / changes from the advice<textarea name="notes" maxlength="4000"></textarea></label>
       <div class="coach-actions"><button class="upload-btn" type="submit">Save completed run & effort</button>
@@ -349,6 +352,9 @@ function showCoachCompletion(content, review, onBack, onSaved) {
     </form>`;
   content.querySelector('#coachCancelCompletion').addEventListener('click', onBack);
   const form = content.querySelector('#coachCompletionForm');
+  form.elements.setting.addEventListener('change', () => {
+    content.querySelector('#coachTreadmillPhases').hidden = form.elements.setting.value !== 'treadmill';
+  });
   form.addEventListener('submit', async event => {
     event.preventDefault();
     const button = form.querySelector('button[type=submit]');
@@ -359,6 +365,7 @@ function showCoachCompletion(content, review, onBack, onSaved) {
       const saved = await coachFetch(`/ai/coaching/history/${encodeURIComponent(review.id)}/complete`, 'POST', {
         start_time: new Date(fields.start_time).toISOString(),
         duration_min: Number(fields.duration_min), setting: fields.setting,
+        treadmill_description: fields.setting === 'treadmill' ? fields.treadmill_description : null,
         perceived_exertion: Number(fields.perceived_exertion), notes: fields.notes
       });
       await init();

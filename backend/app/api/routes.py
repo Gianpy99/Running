@@ -224,6 +224,18 @@ def create_app(db_path: str | None = None) -> FastAPI:
                         candidate = s.get_workout(row["id"])
                         if candidate and candidate.coaching_review_id:
                             matches.append(candidate)
+                if not matches:
+                    # The logged start is usually an estimate, so a run still awaiting its
+                    # TCX matches anywhere within 12 hours when it is the only candidate.
+                    for row in s.list_workouts():
+                        if row.get("source") != "manual_completed":
+                            continue
+                        start = datetime.fromisoformat(row["start_time"])
+                        start = start if start.tzinfo else start.replace(tzinfo=timezone.utc)
+                        if abs((start - workout.start_time).total_seconds()) <= 12 * 3600:
+                            candidate = s.get_workout(row["id"])
+                            if candidate and candidate.coaching_review_id:
+                                matches.append(candidate)
                 if len(matches) > 1:
                     raise HTTPException(409, "Several logged runs match. Select the intended workout explicitly.")
                 reported = matches[0] if matches else None
@@ -235,7 +247,10 @@ def create_app(db_path: str | None = None) -> FastAPI:
                 workout.coaching_review_id = reported.coaching_review_id
                 workout.reported_rpe = reported.reported_rpe
                 workout.reported_setting = reported.reported_setting
-                workout.notes = reported.notes
+                workout.notes = reported.notes or workout.notes
+                if workout.treadmill_speed_mph is None:
+                    workout.treadmill_speed_mph = reported.treadmill_speed_mph
+                    workout.treadmill_incline_pct = reported.treadmill_incline_pct
                 workout.completion = CompletionStatus.COMPLETE
                 workout.terrain = infer_terrain(workout)
                 workout.session_type = classify_session(workout)
@@ -656,9 +671,28 @@ def create_app(db_path: str | None = None) -> FastAPI:
                 raise HTTPException(422, "Only running advice can be marked as a completed run.")
             wid = "completed-" + review_id
             if s.get_workout(wid) is None:
+                notes = payload.notes
+                speed = incline = None
+                if payload.setting == "treadmill":
+                    # Phases go in notes, where main-set analysis reads them; the free-text
+                    # run notes stay in the saved feedback.
+                    description = (payload.treadmill_description or "").strip() or "\n".join(
+                        f"{step['duration_min']:g} min {step['phase']} at {step['target']}"
+                        for step in plan.get("steps") or [])
+                    try:
+                        phases = parse_treadmill_log(description).phases if description else []
+                    except ValueError as exc:
+                        raise HTTPException(422, f"could not parse treadmill phases: {exc}")
+                    if phases:
+                        notes = description
+                        main = max((p for p in phases if p.speed_mph),
+                                   key=lambda p: p.duration_min or 0.0, default=None)
+                        if main is not None:
+                            speed, incline = main.speed_mph, main.incline_pct
                 workout = Workout(
                     id=wid, source="manual_completed", start_time=payload.start_time,
-                    duration_s=payload.duration_min * 60, notes=payload.notes,
+                    duration_s=payload.duration_min * 60, notes=notes,
+                    treadmill_speed_mph=speed, treadmill_incline_pct=incline,
                     coaching_review_id=review_id, reported_rpe=payload.perceived_exertion,
                     reported_setting=payload.setting,
                     terrain=TerrainType.TREADMILL if payload.setting == "treadmill" else TerrainType.UNKNOWN,

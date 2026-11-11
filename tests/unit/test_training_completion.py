@@ -178,3 +178,31 @@ def test_feedback_generation_on_completed_run_remains_cached_after_saving_new_rp
     assert repeated.status_code == 200, repeated.text
     assert repeated.json()["cached"] is True
     assert len(calls) == 1
+
+
+def test_estimated_start_still_attaches_tcx_to_pending_run(completion):
+    client, path, review = completion
+    wid = _complete(client, review, start_time="2026-10-18T11:05:00+00:00").json()["completed_workout"]["workout_id"]
+    response = client.post("/workouts/upload", files={"file": ("run.tcx", TCX, "application/xml")})
+    assert response.status_code == 200, response.text
+    assert response.json()["workout_id"] == wid
+    assert len(client.get("/workouts").json()) == 1
+
+
+def test_treadmill_completion_stores_phases_instead_of_default_routine(completion):
+    client, path, review = completion
+    response = _complete(client, review, setting="treadmill",
+                         treadmill_description="5 min warmup at 4.0mph\n20 min at 6.2mph with 1%\n3 min cooldown at 3.5mph")
+    assert response.status_code == 200, response.text
+    wid = response.json()["completed_workout"]["workout_id"]
+    with SqliteStore(path) as store:
+        workout = store.get_workout(wid)
+        assert workout.treadmill_speed_mph == 6.2
+        assert "20 min at 6.2mph" in workout.notes
+    assert client.get(f"/workouts/{wid}/feedback").json()["feedback"]["notes"] == "Shortened the run; tired legs."
+    client.post("/workouts/upload", files={"file": ("run.tcx", TCX, "application/xml")})
+    with SqliteStore(path) as store:
+        workout = store.get_workout(wid)
+        assert "20 min at 6.2mph" in workout.notes
+        from app.analytics.mainset import main_set_window
+        assert main_set_window(workout, Athlete())["method"] == "declared"

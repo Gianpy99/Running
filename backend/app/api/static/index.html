@@ -423,7 +423,7 @@ async function openWorkout(id) {
       <h3 class="session-heading">${sessionBadge(analysis.session_label, analysis.session_type)}
         <span>${escapeHtml(analysis.terrain.replace('_',' '))}</span></h3>
       <div class="hint" style="color:var(--muted)">${new Date(analysis.start_time).toLocaleString()}</div>
-      ${analysis.terrain === 'treadmill' && !analysis.awaiting_tcx ? `<button class="upload-btn" style="margin:.4rem 0" onclick="editTreadmill('${id}')">✏️ Edit treadmill</button>` : ''}
+      ${analysis.terrain === 'treadmill' ? `<button class="upload-btn" style="margin:.4rem 0" onclick="editTreadmill('${id}')">✏️ Edit treadmill</button>` : ''}
       <button class="upload-btn" style="margin:.4rem 0 .4rem .4rem;background:var(--red);color:#fff" onclick="deleteWorkout('${id}')">🗑 Delete</button>
       <button id="workoutCoachBtn" data-workout-id="${encodeURIComponent(id)}" class="upload-btn" style="margin:.4rem">Get workout feedback</button>
       ${analysis.awaiting_tcx ? `<p class="hint">Completed run and effort saved. Watch distance, HR and pace are not available yet.</p>

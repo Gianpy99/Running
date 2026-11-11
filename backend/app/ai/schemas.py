@@ -78,6 +78,8 @@ class CompletedTraining(WorkoutFeedback):
     start_time: datetime
     duration_min: float = Field(gt=0, le=1440, allow_inf_nan=False)
     setting: Literal["treadmill", "outdoor"]
+    # Treadmill phases actually run, one per line ("10 min warmup at 4.0mph").
+    treadmill_description: str | None = Field(None, max_length=4000)
 
     @field_validator("start_time")
     @classmethod
